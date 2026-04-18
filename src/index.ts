@@ -13,7 +13,7 @@
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -1344,16 +1344,24 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 // MCP endpoint
-const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-server.connect(transport).then(() => {
-  app.post("/mcp", (req: Request, res: Response) => transport.handleRequest(req, res));
-  app.get("/mcp",  (req: Request, res: Response) => transport.handleRequest(req, res));
-  app.delete("/mcp", (req: Request, res: Response) => transport.handleRequest(req, res));
+const transports: Record<string, SSEServerTransport> = {};
+app.get("/sse", async (req: Request, res: Response) => {
+  const transport = new SSEServerTransport("/messages", res);
+  transports[transport.sessionId] = transport;
+  res.on("close", () => delete transports[transport.sessionId]);
+  await server.connect(transport);
+});
 
-  app.listen(PORT, () => {
-    console.log(`Sentinel EMS MCP server listening on port ${PORT}`);
-    console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
-    console.log(`Health check: http://localhost:${PORT}/health`);
-    console.log(`API key protection: ${API_KEY ? "enabled" : "disabled"}`);
-  });
+app.post("/messages", async (req: Request, res: Response) => {
+  const sessionId = req.query.sessionId as string;
+  const transport = transports[sessionId];
+  if (!transport) { res.status(404).send("Session not found"); return; }
+  await transport.handlePostMessage(req, res);
+});
+
+app.listen(PORT, () => {
+  console.log(`Sentinel EMS MCP server listening on port ${PORT}`);
+  console.log(`MCP SSE endpoint: http://localhost:${PORT}/sse`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`API key protection: ${API_KEY ? "enabled" : "disabled"}`);
 });
