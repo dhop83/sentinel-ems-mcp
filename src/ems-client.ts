@@ -549,6 +549,8 @@ export class SentinelEmsClient {
     // Build a correctly structured EMS API body — do NOT pass the raw Feature interface,
     // which contains internal helper fields (namespace_name, license_model_name) that are
     // not valid EMS API body fields and will cause silent failures or 400 errors.
+    //
+    // Endpoint: PATCH /ems/api/v5/features/{featureId}  (NOT PUT — see EMS API docs)
     const body: Record<string, unknown> = {};
 
     if (feature.name !== undefined) {
@@ -559,7 +561,20 @@ export class SentinelEmsClient {
     }
     if (feature.description !== undefined) body.description = feature.description;
 
-    return this.request("PUT", `/features/${uid}`, { feature: body });
+    // License model can be attached via PATCH body — this works on ENABLE features
+    // (unlike POST /featureLicenseModels which returns 405 on ENABLE features)
+    if (feature.license_model_name) {
+      const { lmUid, enforcementUid } = await this.resolveLicenseModel(feature.license_model_name);
+      body.featureLicenseModels = {
+        featureLicenseModel: [{
+          enforcement: { id: enforcementUid },
+          licenseModel: { id: lmUid },
+          isDefault: true,
+        }],
+      };
+    }
+
+    return this.request("PATCH", `/features/${uid}`, { feature: body });
   }
 
   async deleteFeature(uid: string) {
@@ -570,6 +585,10 @@ export class SentinelEmsClient {
    * Associate a license model (+ its enforcement) with a feature.
    * If license_model_name is supplied, the enforcement is resolved automatically.
    * Alternatively pass license_model_uid + enforcement_uid directly.
+   *
+   * NOTE: POST /features/{uid}/featureLicenseModels returns 405 on ENABLE features.
+   * The correct approach for both DRAFT and ENABLE features is PATCH /features/{uid}
+   * with featureLicenseModels in the body — confirmed against EMS API docs.
    */
   async addFeatureLicenseModel(
     featureUid: string,
@@ -594,11 +613,18 @@ export class SentinelEmsClient {
       throw new Error("Provide license_model_name OR both license_model_uid and enforcement_uid");
     }
 
-    return this.request("POST", `/features/${featureUid}/featureLicenseModels`, {
-      featureLicenseModel: {
-        enforcement: { id: enforcementUid },
-        licenseModel: { id: lmUid },
-        isDefault: opts.is_default ?? true,
+    // Use PATCH /features/{uid} with featureLicenseModels in body.
+    // This works on both DRAFT and ENABLE features.
+    // POST /features/{uid}/featureLicenseModels returns 405 on ENABLE features.
+    return this.request("PATCH", `/features/${featureUid}`, {
+      feature: {
+        featureLicenseModels: {
+          featureLicenseModel: [{
+            enforcement: { id: enforcementUid },
+            licenseModel: { id: lmUid },
+            isDefault: opts.is_default ?? true,
+          }],
+        },
       },
     });
   }

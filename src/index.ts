@@ -83,7 +83,20 @@ const TOOLS: any[] = [
       required: ["name"],
     },
   },
-  { name: "ems_update_feature",  description: "Update an existing feature.", inputSchema: { type: "object", properties: { uid: { type: "string" }, name: { type: "string" }, description: { type: "string" } }, required: ["uid"] } },
+  {
+    name: "ems_update_feature",
+    description: "Update an existing feature. Use license_model_name to attach or replace a license model — works on both DRAFT and ENABLE features.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        uid:                { type: "string" },
+        name:               { type: "string" },
+        description:        { type: "string" },
+        license_model_name: { type: "string", description: "License model to attach (e.g. 'Subscription'). Resolved automatically." },
+      },
+      required: ["uid"],
+    },
+  },
   { name: "ems_delete_feature",  description: "Delete a feature.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
   {
     name: "ems_add_feature_license_model",
