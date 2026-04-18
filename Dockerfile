@@ -2,15 +2,13 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci --only=production
+COPY package.json ./
+RUN npm install
 
 COPY tsconfig.json ./
 COPY src/ ./src/
 
-RUN npm install -D typescript @types/node @types/express tsx && \
-    npm run build && \
-    npm prune --production
+RUN npm run build
 
 ENV PORT=3000
 EXPOSE 3000
