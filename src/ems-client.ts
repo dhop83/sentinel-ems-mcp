@@ -501,7 +501,20 @@ export class SentinelEmsClient {
   }
 
   async updateFeature(uid: string, feature: Partial<Feature>) {
-    return this.request("PUT", `/features/${uid}`, { feature });
+    // Build a correctly structured EMS API body — do NOT pass the raw Feature interface,
+    // which contains internal helper fields (namespace_name, license_model_name) that are
+    // not valid EMS API body fields and will cause silent failures or 400 errors.
+    const body: Record<string, unknown> = {};
+
+    if (feature.name !== undefined) {
+      body.nameVersion = {
+        name: feature.name,
+        version: "",   // version is required in nameVersion even when empty
+      };
+    }
+    if (feature.description !== undefined) body.description = feature.description;
+
+    return this.request("PUT", `/features/${uid}`, { feature: body });
   }
 
   async deleteFeature(uid: string) {
