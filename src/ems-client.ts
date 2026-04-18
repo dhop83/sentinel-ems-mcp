@@ -617,11 +617,37 @@ export class SentinelEmsClient {
   // ─── Activations ─────────────────────────────────────────────────────────────
 
   async activateEntitlement(entitlementUid: string, attrs?: ActivationAttribute[]) {
-    return this.request("POST", `/entitlements/${entitlementUid}/activations`, {
-      activation: {
-        attributes: attrs ?? [],
+    // Correct endpoint per EMS API docs: POST /ems/api/v5/activations/bulkActivate
+    // Must supply the product key(s) from the entitlement.
+    // Fetch entitlement first to discover productKey(s) and quantity.
+    const entRes = await this.getEntitlement(entitlementUid);
+    if (!entRes.ok || !entRes.data) {
+      return { data: entRes.data, status: entRes.status, ok: false, error: `Failed to fetch entitlement: ${entRes.error}` };
+    }
+
+    const ent: any = (entRes.data as any).entitlement ?? entRes.data;
+    const productKeys: any[] = ent?.productKeys?.productKey ?? [];
+
+    if (productKeys.length === 0) {
+      return { status: 400, ok: false, error: "Entitlement has no product keys to activate" };
+    }
+
+    // Build productActivation array — one per product key
+    const productActivations = productKeys.map((pk: any) => ({
+      productKey: { id: pk.id },
+      quantity: pk.totalQty ?? pk.remainingQty ?? 1,
+      activationAttributes: attrs && attrs.length > 0 ? { attributes: { attribute: attrs } } : undefined,
+    }));
+
+    const body = {
+      activationData: {
+        entitlement: { id: entitlementUid },
+        productActivations: { productActivation: productActivations },
       },
-    });
+      returnResource: "V2C",
+    };
+
+    return this.request("POST", "/activations/bulkActivate", body);
   }
 
   async getActivations(entitlementUid: string) {
