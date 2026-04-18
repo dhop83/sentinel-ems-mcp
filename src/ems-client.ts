@@ -313,26 +313,41 @@ export class SentinelEmsClient {
     if (product.description) body.description = product.description;
     if (product.state) body.state = product.state;
 
-    // Attach features at creation time if provided
-    const featureRefs: Record<string, unknown>[] = [];
+    // Attach features by UID inline in the POST body (supported by EMS v5 create)
     if (product.feature_uids?.length) {
-      product.feature_uids.forEach(uid => {
-        featureRefs.push({ feature: { id: uid } });
-      });
-    } else if (product.feature_names?.length) {
-      product.feature_names.forEach(name => {
-        featureRefs.push({ feature: { nameVersion: { name } } });
-      });
-    }
-    if (featureRefs.length) {
-      body.productFeatures = { productFeature: featureRefs };
+      body.productFeatures = {
+        productFeature: product.feature_uids.map(fuid => ({ feature: { id: fuid } })),
+      };
     }
 
-    return this.request("POST", "/products", { product: body });
+    const createResult = await this.request("POST", "/products", { product: body });
+    if (!createResult.ok) return createResult;
+
+    // For feature_names: resolve -> UID -> POST /products/{id}/productFeatures
+    // (nameVersion reference in POST body is unreliable in EMS v5)
+    if (product.feature_names?.length) {
+      const newProductUid = (createResult.data as any)?.product?.id;
+      if (newProductUid) {
+        const featRes = await this.listFeatures({ limit: 200 });
+        if (featRes.ok && featRes.data) {
+          const allFeatures: any[] = (featRes.data as any)?.features?.feature ?? [];
+          for (const fname of product.feature_names) {
+            const match = allFeatures.find(
+              (f: any) => f.nameVersion?.name?.toLowerCase() === fname.toLowerCase()
+            );
+            if (match) await this.addProductFeature(newProductUid, match.id);
+          }
+        }
+      }
+    }
+
+    return createResult;
   }
 
   async updateProduct(uid: string, product: Partial<Product>) {
     // PATCH — partial update per EMS API docs: PATCH /ems/api/v5/products/{productId}
+    // NOTE: productFeatures cannot be patched on the product root — features must be
+    // added individually via POST /products/{productId}/productFeatures
     const body: Record<string, unknown> = {};
 
     if (product.name || product.version !== undefined) {
@@ -344,18 +359,52 @@ export class SentinelEmsClient {
     if (product.description !== undefined) body.description = product.description;
     if (product.state) body.state = product.state;
 
-    // Attach features via PATCH (additive — does not replace existing features)
-    const featureRefs: Record<string, unknown>[] = [];
-    if (product.feature_uids?.length) {
-      product.feature_uids.forEach(fuid => featureRefs.push({ feature: { id: fuid } }));
-    } else if (product.feature_names?.length) {
-      product.feature_names.forEach(name => featureRefs.push({ feature: { nameVersion: { name } } }));
-    }
-    if (featureRefs.length) {
-      body.productFeatures = { productFeature: featureRefs };
+    // Only PATCH if there is something to update beyond features
+    let patchResult: ApiResponse | undefined;
+    if (Object.keys(body).length > 0) {
+      patchResult = await this.request("PATCH", `/products/${uid}`, { product: body });
+      if (!patchResult.ok) return patchResult;
     }
 
-    return this.request("PATCH", `/products/${uid}`, { product: body });
+    // Add features via the correct sub-resource endpoint
+    const featureUids: string[] = [];
+    if (product.feature_uids?.length) {
+      featureUids.push(...product.feature_uids);
+    } else if (product.feature_names?.length) {
+      // Resolve names → UIDs
+      const featRes = await this.listFeatures({ limit: 200 });
+      if (!featRes.ok || !featRes.data) return featRes as ApiResponse;
+      const allFeatures: any[] = (featRes.data as any)?.features?.feature ?? [];
+      for (const fname of product.feature_names) {
+        const match = allFeatures.find(
+          (f: any) => f.nameVersion?.name?.toLowerCase() === fname.toLowerCase()
+        );
+        if (!match) return { data: undefined, status: 404, ok: false, error: `Feature not found: "${fname}"` };
+        featureUids.push(match.id);
+      }
+    }
+
+    let lastResult: ApiResponse | undefined = patchResult;
+    for (const fuid of featureUids) {
+      lastResult = await this.addProductFeature(uid, fuid);
+      if (!lastResult.ok) return lastResult;
+    }
+
+    // Return the refreshed product if anything was done
+    return lastResult ?? this.getProduct(uid);
+  }
+
+  /**
+   * Add a single feature to a product.
+   * Endpoint: POST /products/{productId}/productFeatures
+   * Body: { productFeature: { feature: { id: featureUid } } }
+   */
+  async addProductFeature(productUid: string, featureUid: string): Promise<ApiResponse> {
+    return this.request("POST", `/products/${productUid}/productFeatures`, {
+      productFeature: {
+        feature: { id: featureUid },
+      },
+    });
   }
 
   async deleteProduct(uid: string) {
