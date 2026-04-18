@@ -773,9 +773,8 @@ export class SentinelEmsClient {
   // ─── Activations ─────────────────────────────────────────────────────────────
 
   async activateEntitlement(entitlementUid: string, attrs?: ActivationAttribute[]) {
-    // Correct endpoint per EMS API docs: POST /ems/api/v5/activations/bulkActivate
-    // Must supply the product key(s) from the entitlement.
-    // Fetch entitlement first to discover productKey(s) and quantity.
+    // Endpoint: POST /ems/api/v5/activations/bulkActivate
+    // Fetch entitlement first to discover productKey(s) and available quantity.
     const entRes = await this.getEntitlement(entitlementUid);
     if (!entRes.ok || !entRes.data) {
       return { data: entRes.data, status: entRes.status, ok: false, error: `Failed to fetch entitlement: ${entRes.error}` };
@@ -789,18 +788,25 @@ export class SentinelEmsClient {
     }
 
     // Build productActivation array — one per product key
-    const productActivations = productKeys.map((pk: any) => ({
-      productKey: { id: pk.id },
-      quantity: pk.totalQty ?? pk.remainingQty ?? 1,
-      activationAttributes: attrs && attrs.length > 0 ? { attributes: { attribute: attrs } } : undefined,
-    }));
+    // Use availableQuantity (not totalQty/remainingQty — those fields don't exist on the EMS response)
+    const productActivations = productKeys.map((pk: any) => {
+      const activation: Record<string, unknown> = {
+        productKey: { id: pk.id },
+        quantity: pk.availableQuantity ?? pk.totalQuantity ?? 1,
+      };
+      // activationAttributes nesting per EMS API: { activationAttribute: [...] }
+      if (attrs && attrs.length > 0) {
+        activation.activationAttributes = { activationAttribute: attrs };
+      }
+      return activation;
+    });
 
     const body = {
       activationData: {
         entitlement: { id: entitlementUid },
         productActivations: { productActivation: productActivations },
       },
-      returnResource: "V2C",
+      returnResource: true,  // boolean, not "V2C" — controls whether the license resource is returned in the response
     };
 
     return this.request("POST", "/activations/bulkActivate", body);
