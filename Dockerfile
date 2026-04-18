@@ -7,7 +7,8 @@ RUN npm install
 
 COPY src/ ./src/
 
-ENV PORT=3000
-EXPOSE 3000
+# Cache bust v3
+ENV PORT=8080
+EXPOSE 8080
 
 CMD ["npx", "tsx", "src/index.ts"]
