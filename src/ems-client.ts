@@ -332,7 +332,30 @@ export class SentinelEmsClient {
   }
 
   async updateProduct(uid: string, product: Partial<Product>) {
-    return this.request("PUT", `/products/${uid}`, { product });
+    // PATCH — partial update per EMS API docs: PATCH /ems/api/v5/products/{productId}
+    const body: Record<string, unknown> = {};
+
+    if (product.name || product.version !== undefined) {
+      body.nameVersion = {
+        ...(product.name && { name: product.name }),
+        ...(product.version !== undefined && { version: product.version }),
+      };
+    }
+    if (product.description !== undefined) body.description = product.description;
+    if (product.state) body.state = product.state;
+
+    // Attach features via PATCH (additive — does not replace existing features)
+    const featureRefs: Record<string, unknown>[] = [];
+    if (product.feature_uids?.length) {
+      product.feature_uids.forEach(fuid => featureRefs.push({ feature: { id: fuid } }));
+    } else if (product.feature_names?.length) {
+      product.feature_names.forEach(name => featureRefs.push({ feature: { nameVersion: { name } } }));
+    }
+    if (featureRefs.length) {
+      body.productFeatures = { productFeature: featureRefs };
+    }
+
+    return this.request("PATCH", `/products/${uid}`, { product: body });
   }
 
   async deleteProduct(uid: string) {
