@@ -3,7 +3,7 @@
  * Wraps the Sentinel EMS v5 REST API with Basic Auth
  *
  * Configuration via environment variables (set in claude_desktop_config.json):
- *   SENTINEL_EMS_URL       — e.g. https://j3p1n0.trial.sentinelcloud.com
+ *   SENTINEL_EMS_URL       — e.g. https://p0n8ol.trial.sentinelcloud.com
  *   SENTINEL_EMS_USERNAME  — EMS admin username
  *   SENTINEL_EMS_PASSWORD  — EMS admin password
  */
@@ -46,10 +46,10 @@ export interface Product {
   version?: string;
   description?: string;
   product_key?: string;
-  namespace_name?: string;       // Namespace name to place the product in (e.g. 'Default')
-  feature_names?: string[];      // Feature names to attach as productFeatures at creation time
-  feature_uids?: string[];       // Feature UIDs to attach as productFeatures at creation time
-  state?: string;                // ENABLE or DRAFT (default ENABLE)
+  namespace_name?: string;
+  feature_names?: string[];
+  feature_uids?: string[];
+  state?: string;
 }
 
 export interface Feature {
@@ -57,8 +57,8 @@ export interface Feature {
   name: string;
   description?: string;
   feature_type?: string;
-  namespace_name?: string;   // resolve namespace by name or refId1 at creation time
-  license_model_name?: string; // resolve license model + enforcement by name at creation time
+  namespace_name?: string;
+  license_model_name?: string;
 }
 
 export interface EntitlementLine {
@@ -75,13 +75,13 @@ export interface Entitlement {
   customer_uid?: string;
   eid?: string;
   description?: string;
-  is_test?: boolean;         // true = test entitlement, supports draft products
+  is_test?: boolean;
   lines?: EntitlementLine[];
 }
 
 export interface EntitlementUpdate {
   customer_uid?: string;
-  state?: string;           // DRAFT | ENABLE | DISABLE
+  state?: string;
   description?: string;
   start_date?: string;
   end_date?: string;
@@ -110,7 +110,7 @@ export interface Namespace {
   uid?: string;
   name: string;
   description?: string;
-  state?: string;           // DRAFT | ENABLE | DISABLE
+  state?: string;
   refId1?: string;
   refId2?: string;
 }
@@ -120,7 +120,7 @@ export interface Webhook {
   name: string;
   url: string;
   description?: string;
-  state?: string;           // ENABLE | DISABLE
+  state?: string;
   includeData?: boolean;
   events?: string[];
   authProfileUid?: string;
@@ -129,8 +129,8 @@ export interface Webhook {
 export interface WebhookEventSearchParams extends PaginationParams {
   webhook_uid?: string;
   event_id?: string;
-  state?: string;           // SUCCESS | FAILED | IN_PROGRESS
-  from?: string;            // YYYY-MM-DD HH:MM
+  state?: string;
+  from?: string;
   to?: string;
 }
 
@@ -293,18 +293,14 @@ export class SentinelEmsClient {
   }
 
   async createProduct(product: Product) {
-    // Build the correctly nested EMS API body
-    // API expects: { product: { namespace, nameVersion, productFeatures, ... } }
     const body: Record<string, unknown> = {};
 
-    // Namespace: prefer explicit namespace_name, fall back to server default namespaceId
     if (product.namespace_name) {
       body.namespace = { name: product.namespace_name };
     } else if (this.namespaceId) {
       body.namespace = { id: this.namespaceId };
     }
 
-    // nameVersion: EMS requires name/version nested, not flat
     body.nameVersion = {
       name: product.name,
       version: product.version ?? "",
@@ -313,7 +309,6 @@ export class SentinelEmsClient {
     if (product.description) body.description = product.description;
     if (product.state) body.state = product.state;
 
-    // Attach features by UID inline in the POST body (supported by EMS v5 create)
     if (product.feature_uids?.length) {
       body.productFeatures = {
         productFeature: product.feature_uids.map(fuid => ({ feature: { id: fuid } })),
@@ -323,8 +318,6 @@ export class SentinelEmsClient {
     const createResult = await this.request("POST", "/products", { product: body });
     if (!createResult.ok) return createResult;
 
-    // For feature_names: resolve -> UID -> POST /products/{id}/productFeatures
-    // (nameVersion reference in POST body is unreliable in EMS v5)
     if (product.feature_names?.length) {
       const newProductUid = (createResult.data as any)?.product?.id;
       if (newProductUid) {
@@ -345,9 +338,6 @@ export class SentinelEmsClient {
   }
 
   async updateProduct(uid: string, product: Partial<Product>) {
-    // PATCH — partial update per EMS API docs: PATCH /ems/api/v5/products/{productId}
-    // NOTE: productFeatures cannot be patched on the product root — features must be
-    // added individually via POST /products/{productId}/productFeatures
     const body: Record<string, unknown> = {};
 
     if (product.name || product.version !== undefined) {
@@ -359,19 +349,16 @@ export class SentinelEmsClient {
     if (product.description !== undefined) body.description = product.description;
     if (product.state) body.state = product.state;
 
-    // Only PATCH if there is something to update beyond features
     let patchResult: ApiResponse | undefined;
     if (Object.keys(body).length > 0) {
       patchResult = await this.request("PATCH", `/products/${uid}`, { product: body });
       if (!patchResult.ok) return patchResult;
     }
 
-    // Add features via the correct sub-resource endpoint
     const featureUids: string[] = [];
     if (product.feature_uids?.length) {
       featureUids.push(...product.feature_uids);
     } else if (product.feature_names?.length) {
-      // Resolve names → UIDs
       const featRes = await this.listFeatures({ limit: 200 });
       if (!featRes.ok || !featRes.data) return featRes as ApiResponse;
       const allFeatures: any[] = (featRes.data as any)?.features?.feature ?? [];
@@ -390,15 +377,9 @@ export class SentinelEmsClient {
       if (!lastResult.ok) return lastResult;
     }
 
-    // Return the refreshed product if anything was done
     return lastResult ?? this.getProduct(uid);
   }
 
-  /**
-   * Add a single feature to a product by UID.
-   * Endpoint: POST /products/{productId}/productFeatures
-   * Body: { productFeature: { feature: { id: featureUid } } }
-   */
   async addProductFeature(productUid: string, featureUid: string): Promise<ApiResponse> {
     return this.request("POST", `/products/${productUid}/productFeatures`, {
       productFeature: {
@@ -407,19 +388,12 @@ export class SentinelEmsClient {
     });
   }
 
-  /**
-   * Add one or more features to an existing product.
-   * Accepts feature_names (resolved to UIDs) or feature_uids directly.
-   * Returns the refreshed product on success.
-   */
   async addFeatureToProduct(params: {
     product_uid: string;
     feature_names?: string[];
     feature_uids?: string[];
   }): Promise<ApiResponse> {
     const { product_uid, feature_names = [], feature_uids = [] } = params;
-
-    // Resolve feature_names → UIDs
     const resolvedUids: string[] = [...feature_uids];
 
     if (feature_names.length) {
@@ -441,14 +415,12 @@ export class SentinelEmsClient {
       return { data: undefined, status: 400, ok: false, error: "Provide at least one feature_name or feature_uid." };
     }
 
-    // Add each feature — stop on first failure
     let lastResult: ApiResponse | undefined;
     for (const fuid of resolvedUids) {
       lastResult = await this.addProductFeature(product_uid, fuid);
       if (!lastResult.ok) return lastResult;
     }
 
-    // Return the refreshed product
     return this.getProduct(product_uid);
   }
 
@@ -457,16 +429,11 @@ export class SentinelEmsClient {
   }
 
   async deployProduct(uid: string) {
-    // Transitions product state from DRAFT → ENABLE via PATCH
-    // EMS has no /deploy endpoint — state change is done via PATCH on the product resource
     return this.request("PATCH", `/products/${uid}`, { product: { state: "ENABLE" } });
   }
 
-  // ─── Features ────────────────────────────────────────────────────────────────
-
   // ─── Resolution helpers ───────────────────────────────────────────────────
 
-  /** Resolve a namespace UID by matching name or refId1 (case-insensitive). */
   private async resolveNamespaceUid(nameOrRefId: string): Promise<string> {
     const res = await this.listNamespaces({ limit: 100 });
     if (!res.ok || !res.data) throw new Error(`Failed to list namespaces: ${res.error}`);
@@ -480,7 +447,6 @@ export class SentinelEmsClient {
     return match.id as string;
   }
 
-  /** Resolve a license model UID and its enforcement UID by license model name (case-insensitive). */
   private async resolveLicenseModel(name: string): Promise<{ lmUid: string; enforcementUid: string }> {
     const res = await this.listLicenseModels();
     if (!res.ok || !res.data) throw new Error(`Failed to list license models: ${res.error}`);
@@ -488,16 +454,12 @@ export class SentinelEmsClient {
     const match = list.find((lm: any) => lm.name?.toLowerCase() === name.toLowerCase());
     if (!match) throw new Error(`License model not found: "${name}"`);
     const lmUid = match.id as string;
-
-    // Prefer enforcement tagged during aggregation (avoids a second API call)
     if (match._enforcement?.id) {
       return { lmUid, enforcementUid: match._enforcement.id as string };
     }
-
-    // Fallback: enforcement is always tagged by listLicenseModels aggregation above.
-    // getLicenseModel now requires enforcementId, so we throw a clear error if missing.
     throw new Error(`No enforcement found on license model "${name}" — listLicenseModels did not return enforcement-tagged results`);
   }
+
   // ─── Features ────────────────────────────────────────────────────────────────
 
   async listFeatures(params?: PaginationParams & { name?: string }) {
@@ -515,14 +477,12 @@ export class SentinelEmsClient {
   }
 
   async createFeature(feature: Feature) {
-    // Resolve namespace: prefer explicit namespace_name arg, fall back to env-configured namespaceId
     let namespaceId = this.namespaceId;
     if (feature.namespace_name) {
       namespaceId = await this.resolveNamespaceUid(feature.namespace_name);
     }
     if (!namespaceId) throw new Error("namespace_name is required (or set SENTINEL_EMS_NAMESPACE_ID)");
 
-    // Resolve license model + enforcement by name if provided
     let featureLicenseModels: unknown = undefined;
     if (feature.license_model_name) {
       const { lmUid, enforcementUid } = await this.resolveLicenseModel(feature.license_model_name);
@@ -546,23 +506,13 @@ export class SentinelEmsClient {
   }
 
   async updateFeature(uid: string, feature: Partial<Feature>) {
-    // Build a correctly structured EMS API body — do NOT pass the raw Feature interface,
-    // which contains internal helper fields (namespace_name, license_model_name) that are
-    // not valid EMS API body fields and will cause silent failures or 400 errors.
-    //
-    // Endpoint: PATCH /ems/api/v5/features/{featureId}  (NOT PUT — see EMS API docs)
     const body: Record<string, unknown> = {};
 
     if (feature.name !== undefined) {
-      body.nameVersion = {
-        name: feature.name,
-        version: "",   // version is required in nameVersion even when empty
-      };
+      body.nameVersion = { name: feature.name, version: "" };
     }
     if (feature.description !== undefined) body.description = feature.description;
 
-    // License model can be attached via PATCH body — this works on ENABLE features
-    // (unlike POST /featureLicenseModels which returns 405 on ENABLE features)
     if (feature.license_model_name) {
       const { lmUid, enforcementUid } = await this.resolveLicenseModel(feature.license_model_name);
       body.featureLicenseModels = {
@@ -581,15 +531,6 @@ export class SentinelEmsClient {
     return this.request("DELETE", `/features/${uid}`);
   }
 
-  /**
-   * Associate a license model (+ its enforcement) with a feature.
-   * If license_model_name is supplied, the enforcement is resolved automatically.
-   * Alternatively pass license_model_uid + enforcement_uid directly.
-   *
-   * NOTE: POST /features/{uid}/featureLicenseModels returns 405 on ENABLE features.
-   * The correct approach for both DRAFT and ENABLE features is PATCH /features/{uid}
-   * with featureLicenseModels in the body — confirmed against EMS API docs.
-   */
   async addFeatureLicenseModel(
     featureUid: string,
     opts: {
@@ -613,9 +554,6 @@ export class SentinelEmsClient {
       throw new Error("Provide license_model_name OR both license_model_uid and enforcement_uid");
     }
 
-    // Use PATCH /features/{uid} with featureLicenseModels in body.
-    // This works on both DRAFT and ENABLE features.
-    // POST /features/{uid}/featureLicenseModels returns 405 on ENABLE features.
     return this.request("PATCH", `/features/${featureUid}`, {
       feature: {
         featureLicenseModels: {
@@ -629,7 +567,6 @@ export class SentinelEmsClient {
     });
   }
 
-  /** Remove a license model association from a feature by enforcement UID. */
   async removeFeatureLicenseModel(featureUid: string, enforcementUid: string) {
     return this.request("DELETE", `/features/${featureUid}/featureLicenseModels/${enforcementUid}`);
   }
@@ -699,7 +636,6 @@ export class SentinelEmsClient {
   }
 
   async updateEntitlement(uid: string, update: EntitlementUpdate) {
-    // PATCH — partial update, only provided fields are changed
     const body: Record<string, unknown> = {};
     if (update.customer_uid) body.customer = { id: update.customer_uid };
     if (update.state) body.state = update.state;
@@ -712,14 +648,12 @@ export class SentinelEmsClient {
   }
 
   async enableEntitlement(uid: string) {
-    // Transitions entitlement DRAFT → ENABLE. Valid states: DRAFT | ENABLE | DISABLE
     return this.request("PATCH", `/entitlements/${uid}`, {
       entitlement: { state: "ENABLE" },
     });
   }
 
   async completeEntitlement(uid: string) {
-    // Alias for enableEntitlement — there is no COMPLETE state in EMS
     return this.enableEntitlement(uid);
   }
 
@@ -734,13 +668,10 @@ export class SentinelEmsClient {
   }
 
   async getEntitledFeatures(uid: string) {
-    // Fast lookup — returns summary of features entitled to a customer via this entitlement.
-    // Includes product association, available/remaining quantities, and enabled/disabled status.
     return this.request("GET", `/entitlements/${uid}/entitledFeatures`);
   }
 
   async batchCreateEntitlements(entitlements: Entitlement[]) {
-    // Create multiple entitlements in one API call
     const items = entitlements.map((entitlement) => {
       const body: Record<string, unknown> = {};
       if (entitlement.customer_uid) body.customer = { id: entitlement.customer_uid };
@@ -773,19 +704,14 @@ export class SentinelEmsClient {
   // ─── Activations ─────────────────────────────────────────────────────────────
 
   async activateEntitlement(entitlementUid: string, attrs?: ActivationAttribute[]) {
-    // Endpoint: POST /ems/api/v5/activations/bulkActivate
-    //
-    // IMPORTANT: entitlementUid here must be the internal `id` (UUID from the `id` field),
-    // NOT the human-readable `eId` field returned by listEntitlements.
-    // The list response includes both:
-    //   eId: "94265c49-..."  ← display/search key, NOT accepted by GET /entitlements/{uid}
-    //   id:  "f5957779-..."  ← internal UID, required here
-    //
-    // If the caller passed an eId, resolve it to the internal id first.
+    // FIXED: was sending wrong payload structure (activationData/productActivations).
+    // EMS v5 bulkActivate requires:
+    //   { bulkActivation: { activationProductKeys: { activationProductKey: [{ pkId, activationQuantity }] } } }
+
+    // Step 1: resolve eId → internal id if needed
     let internalUid = entitlementUid;
     const directRes = await this.getEntitlement(entitlementUid);
     if (!directRes.ok) {
-      // Likely an eId was passed — search by eId to find the internal id
       const searchRes = await this.listEntitlements({ eid: entitlementUid, limit: 1 });
       if (!searchRes.ok || !searchRes.data) {
         return { data: searchRes.data, status: searchRes.status, ok: false, error: `Failed to resolve entitlement: ${searchRes.error}` };
@@ -797,47 +723,46 @@ export class SentinelEmsClient {
       internalUid = found[0].id as string;
     }
 
-    // Now fetch the full entitlement using the confirmed internal UID
+    // Step 2: fetch full entitlement to get product key pkIds
     const entRes = internalUid === entitlementUid ? directRes : await this.getEntitlement(internalUid);
     if (!entRes.ok || !entRes.data) {
       return { data: entRes.data, status: entRes.status, ok: false, error: `Failed to fetch entitlement: ${entRes.error}` };
     }
 
-    const ent: any = (entRes.data as any).entitlement ?? entRes.data;
+    const ent: any = (entRes.data as any)?.entitlement ?? entRes.data;
     const productKeys: any[] = ent?.productKeys?.productKey ?? [];
 
     if (productKeys.length === 0) {
       return { status: 400, ok: false, error: "Entitlement has no product keys to activate" };
     }
 
-    // Build productActivation array — one per product key.
-    // EMS list/get responses use `pkId` (not `id`) as the product key identifier field.
-    // Use pkId first, fall back to id for forward-compatibility.
-    const productActivations = productKeys.map((pk: any) => {
+    // Step 3: build correct bulkActivate payload — one entry per product key
+    const activationProductKey = productKeys.map((pk: any) => {
       const pkId = pk.pkId ?? pk.id;
-      if (!pkId) {
-        throw new Error(`Product key is missing both pkId and id fields: ${JSON.stringify(pk)}`);
-      }
-      const activation: Record<string, unknown> = {
-        productKey: { id: pkId },
-        quantity: pk.availableQuantity ?? pk.totalQuantity ?? 1,
+      if (!pkId) throw new Error(`Product key missing pkId/id: ${JSON.stringify(pk)}`);
+
+      const entry: Record<string, unknown> = {
+        pkId,
+        activationQuantity: 1,
       };
-      // activationAttributes nesting per EMS API: { activationAttribute: [...] }
+
       if (attrs && attrs.length > 0) {
-        activation.activationAttributes = { activationAttribute: attrs };
+        entry.activationAttributes = {
+          activationAttribute: attrs.map(a => ({ name: a.name, value: a.value })),
+        };
       }
-      return activation;
+
+      return entry;
     });
 
-    const body = {
-      activationData: {
-        entitlement: { id: internalUid },
-        productActivations: { productActivation: productActivations },
+    // Step 4: POST to correct endpoint with correct body structure
+    return this.request("POST", "/activations/bulkActivate", {
+      bulkActivation: {
+        activationProductKeys: {
+          activationProductKey,
+        },
       },
-      returnResource: true,  // boolean — controls whether the license resource is returned in the response
-    };
-
-    return this.request("POST", "/activations/bulkActivate", body);
+    });
   }
 
   async getActivations(entitlementUid: string) {
@@ -870,70 +795,34 @@ export class SentinelEmsClient {
       ...(params?.offset !== undefined && { offset: params.offset }),
       ...(params?.customer_uid && { customerUid: params.customer_uid }),
       ...(params?.product_uid && { productUid: params.product_uid }),
-      ...(params?.days_until_expiry !== undefined && {
-        expiresInDays: params.days_until_expiry,
-      }),
+      ...(params?.days_until_expiry !== undefined && { expiresInDays: params.days_until_expiry }),
     });
   }
 
   async generatePermissionTicket(entitlementUid: string, activationUid: string) {
-    // Step 1 of revocation workflow: generate permission ticket
-    return this.request(
-      "POST",
-      `/activations/${activationUid}/generatePermissionTickets`,
-      { entitlementUid }
-    );
+    return this.request("POST", `/activations/${activationUid}/generatePermissionTickets`, { entitlementUid });
   }
 
-  async generateRevocationTicket(
-    entitlementUid: string,
-    activationUid: string,
-    permissionTicket: string
-  ) {
-    // Step 2 of revocation workflow: submit C2V / permission ticket, get revocation ticket
-    return this.request(
-      "POST",
-      `/activations/${activationUid}/revoke`,
-      { permissionTicket, entitlementUid }
-    );
+  async generateRevocationTicket(entitlementUid: string, activationUid: string, permissionTicket: string) {
+    return this.request("POST", `/activations/${activationUid}/revoke`, { permissionTicket, entitlementUid });
   }
 
   async listActivatees(entitlementUid: string, activationUid: string) {
-    return this.request(
-      "GET",
-      `/entitlements/${entitlementUid}/activations/${activationUid}/activatees`
-    );
+    return this.request("GET", `/entitlements/${entitlementUid}/activations/${activationUid}/activatees`);
   }
 
-  async addActivatee(
-    entitlementUid: string,
-    activationUid: string,
-    email: string,
-    first_name?: string,
-    last_name?: string
-  ) {
-    return this.request(
-      "POST",
-      `/entitlements/${entitlementUid}/activations/${activationUid}/activatees`,
-      {
-        activatee: {
-          emailId: email,
-          ...(first_name && { firstName: first_name }),
-          ...(last_name && { lastName: last_name }),
-        },
-      }
-    );
+  async addActivatee(entitlementUid: string, activationUid: string, email: string, first_name?: string, last_name?: string) {
+    return this.request("POST", `/entitlements/${entitlementUid}/activations/${activationUid}/activatees`, {
+      activatee: {
+        emailId: email,
+        ...(first_name && { firstName: first_name }),
+        ...(last_name && { lastName: last_name }),
+      },
+    });
   }
 
-  async removeActivatee(
-    entitlementUid: string,
-    activationUid: string,
-    activateeUid: string
-  ) {
-    return this.request(
-      "DELETE",
-      `/entitlements/${entitlementUid}/activations/${activationUid}/activatees/${activateeUid}`
-    );
+  async removeActivatee(entitlementUid: string, activationUid: string, activateeUid: string) {
+    return this.request("DELETE", `/entitlements/${entitlementUid}/activations/${activationUid}/activatees/${activateeUid}`);
   }
 
   // ─── License Generation ──────────────────────────────────────────────────────
@@ -966,7 +855,6 @@ export class SentinelEmsClient {
   }
 
   async updateNamespace(uid: string, ns: Partial<Namespace>) {
-    // PUT — replaces the resource; omitted fields revert to default
     const body: Record<string, unknown> = {};
     if (ns.name) body.name = ns.name;
     if (ns.description !== undefined) body.description = ns.description;
@@ -977,7 +865,6 @@ export class SentinelEmsClient {
   }
 
   async patchNamespace(uid: string, ns: Partial<Namespace>) {
-    // PATCH — partial update; only provided fields are changed
     const body: Record<string, unknown> = {};
     if (ns.name) body.name = ns.name;
     if (ns.description !== undefined) body.description = ns.description;
@@ -1014,18 +901,11 @@ export class SentinelEmsClient {
   }
 
   async associateEntitlementToPartner(entitlementUid: string, partnerUid: string) {
-    return this.request(
-      "POST",
-      `/entitlements/${entitlementUid}/channelPartners`,
-      { channelPartner: { id: partnerUid } }
-    );
+    return this.request("POST", `/entitlements/${entitlementUid}/channelPartners`, { channelPartner: { id: partnerUid } });
   }
 
   async removeEntitlementFromPartner(entitlementUid: string, partnerUid: string) {
-    return this.request(
-      "DELETE",
-      `/entitlements/${entitlementUid}/channelPartners/${partnerUid}`
-    );
+    return this.request("DELETE", `/entitlements/${entitlementUid}/channelPartners/${partnerUid}`);
   }
 
   async listEntitlementPartners(entitlementUid: string) {
@@ -1034,12 +914,7 @@ export class SentinelEmsClient {
 
   // ─── Usage / Analytics ───────────────────────────────────────────────────────
 
-  async getUsageSummary(params?: {
-    customer_uid?: string;
-    product_uid?: string;
-    from?: string;
-    to?: string;
-  }) {
+  async getUsageSummary(params?: { customer_uid?: string; product_uid?: string; from?: string; to?: string }) {
     return this.request("GET", "/usage/summary", undefined, {
       ...(params?.customer_uid && { customerUid: params.customer_uid }),
       ...(params?.product_uid && { productUid: params.product_uid }),
@@ -1048,12 +923,7 @@ export class SentinelEmsClient {
     });
   }
 
-  async getUsageDetails(params?: {
-    customer_uid?: string;
-    feature_uid?: string;
-    from?: string;
-    to?: string;
-  }) {
+  async getUsageDetails(params?: { customer_uid?: string; feature_uid?: string; from?: string; to?: string }) {
     return this.request("GET", "/usage/details", undefined, {
       ...(params?.customer_uid && { customerUid: params.customer_uid }),
       ...(params?.feature_uid && { featureUid: params.feature_uid }),
@@ -1069,14 +939,10 @@ export class SentinelEmsClient {
   }
 
   async listLicenseModels(enforcementId?: string) {
-    // Correct endpoint per EMS API docs: GET /enforcements/{enforcementId}/licenseModels
-    // If enforcementId is supplied, query that enforcement directly.
-    // If not supplied, auto-discover all enforcements and aggregate license models across them.
     if (enforcementId) {
       return this.request("GET", `/enforcements/${enforcementId}/licenseModels`);
     }
 
-    // Auto-discover enforcements and collect all license models
     const enfRes = await this.listEnforcements();
     if (!enfRes.ok || !enfRes.data) {
       return { data: { licenseModels: { licenseModel: [] } }, status: enfRes.status, ok: false, error: `Failed to list enforcements: ${enfRes.error}` };
@@ -1088,21 +954,15 @@ export class SentinelEmsClient {
       const lmRes = await this.request("GET", `/enforcements/${enf.id}/licenseModels`);
       if (lmRes.ok && lmRes.data) {
         const models = (lmRes.data as any)?.licenseModels?.licenseModel ?? [];
-        // Tag each model with its enforcement for downstream use
         models.forEach((m: any) => { m._enforcement = enf; });
         allModels.push(...models);
       }
     }
 
-    return {
-      data: { licenseModels: { licenseModel: allModels } },
-      status: 200,
-      ok: true,
-    };
+    return { data: { licenseModels: { licenseModel: allModels } }, status: 200, ok: true };
   }
 
   async getLicenseModel(enforcementId: string, uid: string) {
-    // Correct endpoint: GET /enforcements/{enforcementId}/licenseModels/{licenseModelId}
     return this.request("GET", `/enforcements/${enforcementId}/licenseModels/${uid}`);
   }
 
@@ -1121,10 +981,7 @@ export class SentinelEmsClient {
   }
 
   async createWebhook(webhook: Webhook) {
-    const body: Record<string, unknown> = {
-      name: webhook.name,
-      url: webhook.url,
-    };
+    const body: Record<string, unknown> = { name: webhook.name, url: webhook.url };
     if (webhook.description) body.description = webhook.description;
     if (webhook.state) body.state = webhook.state;
     if (webhook.includeData !== undefined) body.includeData = webhook.includeData ? "YES" : "NO";
@@ -1166,7 +1023,6 @@ export class SentinelEmsClient {
   }
 
   async retryWebhookEvents(event_ids?: string[]) {
-    // Reprocess all failed events, or selectively by event ID array
     const body: Record<string, unknown> = {};
     if (event_ids && event_ids.length > 0) {
       body.events = { event: event_ids.map((id) => ({ id })) };
