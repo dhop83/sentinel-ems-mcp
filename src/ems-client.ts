@@ -774,8 +774,31 @@ export class SentinelEmsClient {
 
   async activateEntitlement(entitlementUid: string, attrs?: ActivationAttribute[]) {
     // Endpoint: POST /ems/api/v5/activations/bulkActivate
-    // Fetch entitlement first to discover productKey(s) and available quantity.
-    const entRes = await this.getEntitlement(entitlementUid);
+    //
+    // IMPORTANT: entitlementUid here must be the internal `id` (UUID from the `id` field),
+    // NOT the human-readable `eId` field returned by listEntitlements.
+    // The list response includes both:
+    //   eId: "94265c49-..."  ← display/search key, NOT accepted by GET /entitlements/{uid}
+    //   id:  "f5957779-..."  ← internal UID, required here
+    //
+    // If the caller passed an eId, resolve it to the internal id first.
+    let internalUid = entitlementUid;
+    const directRes = await this.getEntitlement(entitlementUid);
+    if (!directRes.ok) {
+      // Likely an eId was passed — search by eId to find the internal id
+      const searchRes = await this.listEntitlements({ eid: entitlementUid, limit: 1 });
+      if (!searchRes.ok || !searchRes.data) {
+        return { data: searchRes.data, status: searchRes.status, ok: false, error: `Failed to resolve entitlement: ${searchRes.error}` };
+      }
+      const found: any[] = (searchRes.data as any)?.entitlements?.entitlement ?? [];
+      if (found.length === 0) {
+        return { status: 404, ok: false, error: `No entitlement found with eId or id: "${entitlementUid}"` };
+      }
+      internalUid = found[0].id as string;
+    }
+
+    // Now fetch the full entitlement using the confirmed internal UID
+    const entRes = internalUid === entitlementUid ? directRes : await this.getEntitlement(internalUid);
     if (!entRes.ok || !entRes.data) {
       return { data: entRes.data, status: entRes.status, ok: false, error: `Failed to fetch entitlement: ${entRes.error}` };
     }
@@ -787,11 +810,16 @@ export class SentinelEmsClient {
       return { status: 400, ok: false, error: "Entitlement has no product keys to activate" };
     }
 
-    // Build productActivation array — one per product key
-    // Use availableQuantity (not totalQty/remainingQty — those fields don't exist on the EMS response)
+    // Build productActivation array — one per product key.
+    // EMS list/get responses use `pkId` (not `id`) as the product key identifier field.
+    // Use pkId first, fall back to id for forward-compatibility.
     const productActivations = productKeys.map((pk: any) => {
+      const pkId = pk.pkId ?? pk.id;
+      if (!pkId) {
+        throw new Error(`Product key is missing both pkId and id fields: ${JSON.stringify(pk)}`);
+      }
       const activation: Record<string, unknown> = {
-        productKey: { id: pk.pkId },
+        productKey: { id: pkId },
         quantity: pk.availableQuantity ?? pk.totalQuantity ?? 1,
       };
       // activationAttributes nesting per EMS API: { activationAttribute: [...] }
@@ -803,10 +831,10 @@ export class SentinelEmsClient {
 
     const body = {
       activationData: {
-        entitlement: { id: entitlementUid },
+        entitlement: { id: internalUid },
         productActivations: { productActivation: productActivations },
       },
-      returnResource: true,  // boolean, not "V2C" — controls whether the license resource is returned in the response
+      returnResource: true,  // boolean — controls whether the license resource is returned in the response
     };
 
     return this.request("POST", "/activations/bulkActivate", body);
