@@ -204,7 +204,11 @@ app.head("/", (_req, res) => {
   res.status(200).end();
 });
 
-app.post("/", requireBearer, handleMcp);
+app.post("/", requireBearer, async (req: Request, res: Response) => {
+  console.log("POST / headers:", JSON.stringify(req.headers));
+  console.log("POST / body:", JSON.stringify(req.body));
+  await handleMcp(req, res);
+});
 app.get("/",  requireBearer, handleMcp);
 app.delete("/", requireBearer, handleMcp);
 
