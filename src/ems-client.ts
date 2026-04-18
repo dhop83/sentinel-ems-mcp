@@ -395,7 +395,7 @@ export class SentinelEmsClient {
   }
 
   /**
-   * Add a single feature to a product.
+   * Add a single feature to a product by UID.
    * Endpoint: POST /products/{productId}/productFeatures
    * Body: { productFeature: { feature: { id: featureUid } } }
    */
@@ -405,6 +405,51 @@ export class SentinelEmsClient {
         feature: { id: featureUid },
       },
     });
+  }
+
+  /**
+   * Add one or more features to an existing product.
+   * Accepts feature_names (resolved to UIDs) or feature_uids directly.
+   * Returns the refreshed product on success.
+   */
+  async addFeatureToProduct(params: {
+    product_uid: string;
+    feature_names?: string[];
+    feature_uids?: string[];
+  }): Promise<ApiResponse> {
+    const { product_uid, feature_names = [], feature_uids = [] } = params;
+
+    // Resolve feature_names → UIDs
+    const resolvedUids: string[] = [...feature_uids];
+
+    if (feature_names.length) {
+      const featRes = await this.listFeatures({ limit: 200 });
+      if (!featRes.ok || !featRes.data) return featRes as ApiResponse;
+      const allFeatures: any[] = (featRes.data as any)?.features?.feature ?? [];
+      for (const fname of feature_names) {
+        const match = allFeatures.find(
+          (f: any) => f.nameVersion?.name?.toLowerCase() === fname.toLowerCase()
+        );
+        if (!match) {
+          return { data: undefined, status: 404, ok: false, error: `Feature not found: "${fname}"` };
+        }
+        resolvedUids.push(match.id);
+      }
+    }
+
+    if (!resolvedUids.length) {
+      return { data: undefined, status: 400, ok: false, error: "Provide at least one feature_name or feature_uid." };
+    }
+
+    // Add each feature — stop on first failure
+    let lastResult: ApiResponse | undefined;
+    for (const fuid of resolvedUids) {
+      lastResult = await this.addProductFeature(product_uid, fuid);
+      if (!lastResult.ok) return lastResult;
+    }
+
+    // Return the refreshed product
+    return this.getProduct(product_uid);
   }
 
   async deleteProduct(uid: string) {

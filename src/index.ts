@@ -52,6 +52,19 @@ const TOOLS: any[] = [
   { name: "ems_update_product",  description: "Update an existing product. Use feature_names (comma-separated) to attach features, state=ENABLE to deploy.", inputSchema: { type: "object", properties: { uid: { type: "string" }, name: { type: "string" }, version: { type: "string" }, description: { type: "string" }, feature_names: { type: "string", description: "Comma-separated feature names to attach e.g. Feature_1,Feature_2" }, feature_uids: { type: "string", description: "Comma-separated feature UIDs to attach" }, state: { type: "string", description: "ENABLE to deploy, DISABLE to deactivate" } }, required: ["uid"] } },
   { name: "ems_delete_product",  description: "Delete a product.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
   { name: "ems_deploy_product",  description: "Deploy a product (DRAFT → ENABLE).", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
+  {
+    name: "ems_add_feature_to_product",
+    description: "Add one or more features to an existing product. Accepts feature names (resolved automatically) or feature UIDs. Returns the updated product.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        product_uid:   { type: "string", description: "UID of the product to update" },
+        feature_names: { type: "string", description: "Comma-separated feature names to add, e.g. 'HelloClaude,Feature2'" },
+        feature_uids:  { type: "string", description: "Comma-separated feature UIDs to add" },
+      },
+      required: ["product_uid"],
+    },
+  },
 
   // ── Features ──────────────────────────────────────────────────────────────
   { name: "ems_list_features",   description: "List all features defined in Sentinel EMS.", inputSchema: { type: "object", properties: { name: { type: "string" }, limit: { type: "number" }, offset: { type: "number" } } } },
@@ -185,6 +198,16 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
       case "ems_update_product": { const { uid, ...rest } = a; if (typeof rest.feature_names === "string") rest.feature_names = rest.feature_names.split(",").map((s) => s.trim()).filter(Boolean); if (typeof rest.feature_uids === "string") rest.feature_uids = rest.feature_uids.split(",").map((s) => s.trim()).filter(Boolean); result = await client.updateProduct(uid, rest); break; }
       case "ems_delete_product":  result = await client.deleteProduct(str("uid")!); break;
       case "ems_deploy_product":  result = await client.deployProduct(str("uid")!); break;
+      case "ems_add_feature_to_product": {
+        const featureNames = str("feature_names")?.split(",").map(s => s.trim()).filter(Boolean) ?? [];
+        const featureUids  = str("feature_uids")?.split(",").map(s => s.trim()).filter(Boolean) ?? [];
+        result = await client.addFeatureToProduct({
+          product_uid:   str("product_uid")!,
+          feature_names: featureNames,
+          feature_uids:  featureUids,
+        });
+        break;
+      }
 
       // ── Features ───────────────────────────────────────────────────────────
       case "ems_list_features":   result = await client.listFeatures({ name: str("name"), limit: num("limit"), offset: num("offset") }); break;
