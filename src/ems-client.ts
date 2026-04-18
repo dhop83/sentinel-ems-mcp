@@ -791,7 +791,7 @@ export class SentinelEmsClient {
     // Use availableQuantity (not totalQty/remainingQty — those fields don't exist on the EMS response)
     const productActivations = productKeys.map((pk: any) => {
       const activation: Record<string, unknown> = {
-        productKey: { id: pk.id },
+        productKey: { id: pk.pkId },
         quantity: pk.availableQuantity ?? pk.totalQuantity ?? 1,
       };
       // activationAttributes nesting per EMS API: { activationAttribute: [...] }
