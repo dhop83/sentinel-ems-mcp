@@ -177,7 +177,7 @@ app.get("/.well-known/oauth-authorization-server", (req, res) => {
 });
 
 // ── OAuth Dynamic Client Registration ────────────────────────────────────────
-app.post("/register", (req, res) => {
+app.all("/register", (req, res) => {
   const clientId = `client_${randomUUID()}`;
   const clientSecret = randomUUID();
   const meta = { ...req.body, client_id: clientId, client_secret: clientSecret };
