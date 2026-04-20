@@ -727,24 +727,60 @@ export class SentinelEmsClient {
 
   // ─── Activations ─────────────────────────────────────────────────────────────
 
+  /**
+   * Activate an entitlement.
+   *
+   * Accepts either:
+   *   - The internal EMS UID (uuid format, e.g. f5957779-bfef-4b34-a477-f28c7b5a8baa)
+   *   - The human-readable eId (e.g. 94265c49-a679-404a-80f0-eada092434c2)
+   *
+   * The method resolves the internal UID automatically if an eId is passed,
+   * then fetches the full entitlement (with productKeys embed) to extract
+   * pkId values before calling POST /activations/bulkActivate.
+   *
+   * FIX (2026-04-19): Corrected bulkActivate request body shape.
+   * Previous shape used { activationData: { entitlement, productActivations } }
+   * which EMS rejected with error 152 "Invalid JSON string provided".
+   * Correct shape per EMS v5 API docs:
+   *   { activations: [{ entitlement, productKey, quantity, activationAttributes? }], returnResource }
+   */
   async activateEntitlement(entitlementUid: string, attrs?: ActivationAttribute[]) {
+    // ── Step 1: resolve internal UID ──────────────────────────────────────────
     let internalUid = entitlementUid;
+
     const directRes = await this.getEntitlement(entitlementUid);
     if (!directRes.ok) {
+      // Not an internal UID — try resolving as eId
       const searchRes = await this.listEntitlements({ eid: entitlementUid, limit: 1 });
       if (!searchRes.ok || !searchRes.data) {
-        return { data: searchRes.data, status: searchRes.status, ok: false, error: `Failed to resolve entitlement: ${searchRes.error}` };
+        return {
+          data: searchRes.data,
+          status: searchRes.status,
+          ok: false,
+          error: `Failed to resolve entitlement: ${searchRes.error}`,
+        };
       }
       const found: any[] = (searchRes.data as any)?.entitlements?.entitlement ?? [];
       if (found.length === 0) {
-        return { status: 404, ok: false, error: `No entitlement found with eId or id: "${entitlementUid}"` };
+        return {
+          status: 404,
+          ok: false,
+          error: `No entitlement found with eId or id: "${entitlementUid}"`,
+        };
       }
       internalUid = found[0].id as string;
     }
 
-    const entRes = internalUid === entitlementUid ? directRes : await this.getEntitlement(internalUid);
+    // ── Step 2: fetch full entitlement with productKeys embed ─────────────────
+    // Always re-fetch using internalUid so we get pkId fields from getEntitlement
+    const entRes = await this.getEntitlement(internalUid);
     if (!entRes.ok || !entRes.data) {
-      return { data: entRes.data, status: entRes.status, ok: false, error: `Failed to fetch entitlement: ${entRes.error}` };
+      return {
+        data: entRes.data,
+        status: entRes.status,
+        ok: false,
+        error: `Failed to fetch entitlement: ${entRes.error}`,
+      };
     }
 
     const ent: any = (entRes.data as any).entitlement ?? entRes.data;
@@ -754,26 +790,42 @@ export class SentinelEmsClient {
       return { status: 400, ok: false, error: "Entitlement has no product keys to activate" };
     }
 
-    const productActivations = productKeys.map((pk: any) => {
+    // ── Step 3: build activations array ──────────────────────────────────────
+    // Each productKey becomes one activation entry.
+    // EMS bulkActivate expects:
+    //   { activations: [ { entitlement, productKey, quantity, activationAttributes? } ], returnResource }
+    const activations = productKeys.map((pk: any) => {
       const pkId = pk.pkId ?? pk.id;
       if (!pkId) {
-        throw new Error(`Product key is missing both pkId and id fields: ${JSON.stringify(pk)}`);
+        throw new Error(
+          `Product key is missing both pkId and id fields: ${JSON.stringify(pk)}`
+        );
       }
+
+      // Use availableQuantity if set and > 0, otherwise fall back to totalQuantity
+      const quantity =
+        pk.availableQuantity !== undefined && pk.availableQuantity > 0
+          ? pk.availableQuantity
+          : (pk.totalQuantity ?? 1);
+
       const activation: Record<string, unknown> = {
+        entitlement: { id: internalUid },
         productKey: { id: pkId },
-        quantity: (pk.availableQuantity !== undefined && pk.availableQuantity > 0) ? pk.availableQuantity : (pk.totalQuantity ?? 1),
+        quantity,
       };
+
       if (attrs && attrs.length > 0) {
-        activation.activationAttributes = { activationAttribute: attrs };
+        activation.activationAttributes = {
+          activationAttribute: attrs,
+        };
       }
+
       return activation;
     });
 
+    // ── Step 4: POST to bulkActivate ──────────────────────────────────────────
     const body = {
-      activationData: {
-        entitlement: { id: internalUid },
-        productActivations: { productActivation: productActivations },
-      },
+      activations: { activation: activations },
       returnResource: true,
     };
 
@@ -1011,7 +1063,12 @@ export class SentinelEmsClient {
 
     const enfRes = await this.listEnforcements();
     if (!enfRes.ok || !enfRes.data) {
-      return { data: { licenseModels: { licenseModel: [] } }, status: enfRes.status, ok: false, error: `Failed to list enforcements: ${enfRes.error}` };
+      return {
+        data: { licenseModels: { licenseModel: [] } },
+        status: enfRes.status,
+        ok: false,
+        error: `Failed to list enforcements: ${enfRes.error}`,
+      };
     }
     const enforcements: any[] = (enfRes.data as any)?.enforcements?.enforcement ?? [];
     const allModels: any[] = [];
@@ -1105,13 +1162,6 @@ export class SentinelEmsClient {
 
   // ─── Transactions ─────────────────────────────────────────────────────────────
 
-  /**
-   * Search EMS transaction history.
-   * GET /ems/api/v5/transactions
-   *
-   * Supports filtering by entity type, entity identifier, date range,
-   * operator, free-text comment search, pagination, and sort order.
-   */
   async searchTransactions(params: TransactionSearchParams = {}) {
     const query: Record<string, string | number | boolean> = {};
 
@@ -1131,13 +1181,6 @@ export class SentinelEmsClient {
     return this.request("GET", "/transactions", undefined, query);
   }
 
-  /**
-   * Get the field-level changelog for a specific transaction.
-   * GET /ems/api/v5/transactions/{transactionId}/changeLog
-   *
-   * Returns before/after diffs for every field changed in the transaction,
-   * e.g. "state: DRAFT updated to ENABLE".
-   */
   async getTransactionChangelog(transactionId: string) {
     return this.request("GET", `/transactions/${transactionId}/changeLog`);
   }
