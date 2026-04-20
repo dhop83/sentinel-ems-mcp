@@ -738,13 +738,10 @@ export class SentinelEmsClient {
    * then fetches the full entitlement (with productKeys embed) to extract
    * pkId values before calling POST /activations/bulkActivate.
    *
-   * FIX (2026-04-19): Corrected bulkActivate request body shape.
-   * Previous shape used { activationData: { entitlement, productActivations } }
-   * which EMS rejected with error 152 "Invalid JSON string provided".
-   * Correct shape per EMS v5 API docs:
-   *   { activations: [{ entitlement, productKey, quantity, activationAttributes? }], returnResource }
+   * quantity (optional): number of seats to activate per product key.
+   *   If omitted, falls back to availableQuantity then totalQuantity from the product key.
    */
-  async activateEntitlement(entitlementUid: string, attrs?: ActivationAttribute[]) {
+  async activateEntitlement(entitlementUid: string, attrs?: ActivationAttribute[], quantity?: number) {
     // ── Step 1: resolve internal UID ──────────────────────────────────────────
     let internalUid = entitlementUid;
 
@@ -772,7 +769,6 @@ export class SentinelEmsClient {
     }
 
     // ── Step 2: fetch full entitlement with productKeys embed ─────────────────
-    // Always re-fetch using internalUid so we get pkId fields from getEntitlement
     const entRes = await this.getEntitlement(internalUid);
     if (!entRes.ok || !entRes.data) {
       return {
@@ -791,9 +787,7 @@ export class SentinelEmsClient {
     }
 
     // ── Step 3: build activations array ──────────────────────────────────────
-    // Each productKey becomes one activation entry.
-    // EMS bulkActivate expects:
-    //   { activations: [ { entitlement, productKey, quantity, activationAttributes? } ], returnResource }
+    // quantity param takes priority; falls back to availableQuantity then totalQuantity
     const activations = productKeys.map((pk: any) => {
       const pkId = pk.pkId ?? pk.id;
       if (!pkId) {
@@ -802,16 +796,17 @@ export class SentinelEmsClient {
         );
       }
 
-      // Use availableQuantity if set and > 0, otherwise fall back to totalQuantity
-      const quantity =
-        pk.availableQuantity !== undefined && pk.availableQuantity > 0
-          ? pk.availableQuantity
-          : (pk.totalQuantity ?? 1);
+      const qty =
+        quantity !== undefined
+          ? quantity
+          : pk.availableQuantity !== undefined && pk.availableQuantity > 0
+            ? pk.availableQuantity
+            : (pk.totalQuantity ?? 1);
 
       const activation: Record<string, unknown> = {
         entitlement: { id: internalUid },
         productKey: { id: pkId },
-        quantity,
+        quantity: qty,
       };
 
       if (attrs && attrs.length > 0) {
