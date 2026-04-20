@@ -29,6 +29,38 @@ const accessTokens = new Set<string>();
 // ─── Tools ────────────────────────────────────────────────────────────────────
 const TOOLS: any[] = [
 
+  // ── Activations (first — ensures registry pickup) ─────────────────────────
+  {
+    name: "ems_activate_entitlement",
+    description: "Activate an entitlement (generates license).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        entitlement_uid: { type: "string", description: "Entitlement UID or eId" },
+        quantity: { type: "number", description: "Number of seats to activate per product key (defaults to available quantity)" },
+        attrs: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name:  { type: "string" },
+              value: { type: "string" },
+            },
+            required: ["name", "value"],
+          },
+        },
+      },
+      required: ["entitlement_uid"],
+    },
+  },
+  { name: "ems_list_activations",               description: "List activations for an entitlement.", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" } }, required: ["entitlement_uid"] } },
+  { name: "ems_get_activation",                 description: "Get a specific activation by UID.", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, activation_uid: { type: "string" } }, required: ["entitlement_uid", "activation_uid"] } },
+  { name: "ems_deactivate",                     description: "Deactivate an activation.", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, activation_uid: { type: "string" } }, required: ["entitlement_uid", "activation_uid"] } },
+  { name: "ems_renew_activation",               description: "Renew an activation, optionally extending end date.", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, activation_uid: { type: "string" }, end_date: { type: "string", description: "New end date YYYY-MM-DD" } }, required: ["entitlement_uid", "activation_uid"] } },
+  { name: "ems_search_expiring_activations",    description: "Search for activations expiring within N days.", inputSchema: { type: "object", properties: { days_until_expiry: { type: "number" }, customer_uid: { type: "string" }, product_uid: { type: "string" }, limit: { type: "number" }, offset: { type: "number" } } } },
+  { name: "ems_generate_permission_ticket",     description: "Generate a permission ticket (step 1 of revocation workflow).", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, activation_uid: { type: "string" } }, required: ["entitlement_uid", "activation_uid"] } },
+  { name: "ems_generate_revocation_ticket",     description: "Generate a revocation ticket (step 2 of revocation workflow).", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, activation_uid: { type: "string" }, permission_ticket: { type: "string" } }, required: ["entitlement_uid", "activation_uid", "permission_ticket"] } },
+
   // ── System ────────────────────────────────────────────────────────────────
   { name: "ems_ping", description: "Ping the Sentinel EMS API to verify connectivity.", inputSchema: { type: "object", properties: {} } },
 
@@ -124,16 +156,6 @@ const TOOLS: any[] = [
   { name: "ems_delete_entitlement",         description: "Delete an entitlement.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
   { name: "ems_get_entitled_features",      description: "Get entitled features summary for an entitlement.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
   { name: "ems_batch_create_entitlements",  description: "Create multiple entitlements in a single API call.", inputSchema: { type: "object", properties: { entitlements: { type: "array", items: { type: "object" } } }, required: ["entitlements"] } },
-
-  // ── Activations ───────────────────────────────────────────────────────────
-  { name: "ems_activate_entitlement",           description: "Activate an entitlement (generates license).", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, attrs: { type: "array", items: { type: "object", properties: { name: { type: "string" }, value: { type: "string" } }, required: ["name", "value"] } } }, required: ["entitlement_uid"] } },
-  { name: "ems_list_activations",               description: "List activations for an entitlement.", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" } }, required: ["entitlement_uid"] } },
-  { name: "ems_get_activation",                 description: "Get a specific activation by UID.", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, activation_uid: { type: "string" } }, required: ["entitlement_uid", "activation_uid"] } },
-  { name: "ems_deactivate",                     description: "Deactivate an activation.", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, activation_uid: { type: "string" } }, required: ["entitlement_uid", "activation_uid"] } },
-  { name: "ems_renew_activation",               description: "Renew an activation, optionally extending end date.", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, activation_uid: { type: "string" }, end_date: { type: "string", description: "New end date YYYY-MM-DD" } }, required: ["entitlement_uid", "activation_uid"] } },
-  { name: "ems_search_expiring_activations",    description: "Search for activations expiring within N days.", inputSchema: { type: "object", properties: { days_until_expiry: { type: "number" }, customer_uid: { type: "string" }, product_uid: { type: "string" }, limit: { type: "number" }, offset: { type: "number" } } } },
-  { name: "ems_generate_permission_ticket",     description: "Generate a permission ticket (step 1 of revocation workflow).", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, activation_uid: { type: "string" } }, required: ["entitlement_uid", "activation_uid"] } },
-  { name: "ems_generate_revocation_ticket",     description: "Generate a revocation ticket (step 2 of revocation workflow).", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, activation_uid: { type: "string" }, permission_ticket: { type: "string" } }, required: ["entitlement_uid", "activation_uid", "permission_ticket"] } },
 
   // ── Activatees ────────────────────────────────────────────────────────────
   { name: "ems_list_activatees",   description: "List activatees for an activation.", inputSchema: { type: "object", properties: { entitlement_uid: { type: "string" }, activation_uid: { type: "string" } }, required: ["entitlement_uid", "activation_uid"] } },
@@ -252,13 +274,13 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
       // ── Products ───────────────────────────────────────────────────────────
       case "ems_list_products":   result = await client.listProducts({ name: str("name"), limit: num("limit"), offset: num("offset") }); break;
       case "ems_get_product":     result = await client.getProduct(str("uid")!); break;
-      case "ems_create_product": { const pa = { ...a }; if (typeof pa.feature_names === "string") pa.feature_names = pa.feature_names.split(",").map((s) => s.trim()).filter(Boolean); if (typeof pa.feature_uids === "string") pa.feature_uids = pa.feature_uids.split(",").map((s) => s.trim()).filter(Boolean); result = await client.createProduct(pa); break; }
-      case "ems_update_product": { const { uid, ...rest } = a; if (typeof rest.feature_names === "string") rest.feature_names = rest.feature_names.split(",").map((s) => s.trim()).filter(Boolean); if (typeof rest.feature_uids === "string") rest.feature_uids = rest.feature_uids.split(",").map((s) => s.trim()).filter(Boolean); result = await client.updateProduct(uid, rest); break; }
+      case "ems_create_product": { const pa = { ...a }; if (typeof pa.feature_names === "string") pa.feature_names = pa.feature_names.split(",").map((s: string) => s.trim()).filter(Boolean); if (typeof pa.feature_uids === "string") pa.feature_uids = pa.feature_uids.split(",").map((s: string) => s.trim()).filter(Boolean); result = await client.createProduct(pa); break; }
+      case "ems_update_product": { const { uid, ...rest } = a; if (typeof rest.feature_names === "string") rest.feature_names = rest.feature_names.split(",").map((s: string) => s.trim()).filter(Boolean); if (typeof rest.feature_uids === "string") rest.feature_uids = rest.feature_uids.split(",").map((s: string) => s.trim()).filter(Boolean); result = await client.updateProduct(uid, rest); break; }
       case "ems_delete_product":  result = await client.deleteProduct(str("uid")!); break;
       case "ems_deploy_product":  result = await client.deployProduct(str("uid")!); break;
       case "ems_add_feature_to_product": {
-        const featureNames = str("feature_names")?.split(",").map(s => s.trim()).filter(Boolean) ?? [];
-        const featureUids  = str("feature_uids")?.split(",").map(s => s.trim()).filter(Boolean) ?? [];
+        const featureNames = str("feature_names")?.split(",").map((s: string) => s.trim()).filter(Boolean) ?? [];
+        const featureUids  = str("feature_uids")?.split(",").map((s: string) => s.trim()).filter(Boolean) ?? [];
         result = await client.addFeatureToProduct({
           product_uid:   str("product_uid")!,
           feature_names: featureNames,
@@ -294,7 +316,7 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
       case "ems_batch_create_entitlements": result = await client.batchCreateEntitlements(a["entitlements"] as any[]); break;
 
       // ── Activations ────────────────────────────────────────────────────────
-      case "ems_activate_entitlement":        result = await client.activateEntitlement(str("entitlement_uid")!, a["attrs"]); break;
+      case "ems_activate_entitlement":        result = await client.activateEntitlement(str("entitlement_uid")!, a["attrs"], num("quantity")); break;
       case "ems_list_activations":            result = await client.getActivations(str("entitlement_uid")!); break;
       case "ems_get_activation":              result = await client.getActivation(str("entitlement_uid")!, str("activation_uid")!); break;
       case "ems_deactivate":                  result = await client.deactivateActivation(str("entitlement_uid")!, str("activation_uid")!); break;
