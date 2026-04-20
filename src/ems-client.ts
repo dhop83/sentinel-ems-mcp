@@ -761,7 +761,7 @@ export class SentinelEmsClient {
       }
       const activation: Record<string, unknown> = {
         productKey: { id: pkId },
-        quantity: pk.availableQuantity ?? pk.totalQuantity ?? 1,
+        quantity: (pk.availableQuantity !== undefined && pk.availableQuantity > 0) ? pk.availableQuantity : (pk.totalQuantity ?? 1),
       };
       if (attrs && attrs.length > 0) {
         activation.activationAttributes = { activationAttribute: attrs };
