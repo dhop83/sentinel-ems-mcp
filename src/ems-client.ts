@@ -135,18 +135,18 @@ export interface WebhookEventSearchParams extends PaginationParams {
 }
 
 export interface TransactionSearchParams {
-  entityType?: string;       // Activation | Contact | Customer | Device | Entitlement | LicenseGrant | Partner | PartnerUser | Product | ProductConsumerAuthorization | ReportJob | ReportTemplate | User | Fingerprint | Revocation
-  entityIdentifier?: string; // Unique identifier for the entity (format varies by entityType)
-  fromDate?: string;         // Start date for search (YYYY-MM-DD or ISO)
-  toDate?: string;           // End date for search (YYYY-MM-DD or ISO)
-  txtSearch?: string;        // Free-text search in transaction comments
-  operatedBy?: string;       // Filter by operator user
-  executedBy?: string;       // Filter by executor user
-  pageStartIndex?: number;   // Pagination start index (default: 0)
-  pageSize?: number;         // Records per page
-  searchPattern?: string;    // Exact | Like | Normal (default: Normal)
-  sortByAsc?: string;        // Field to sort ascending: operationDate | operatedBy | executedBy | operation | entityType | comments
-  sortByDesc?: string;       // Field to sort descending (same values as sortByAsc)
+  entityType?: string;
+  entityIdentifier?: string;
+  fromDate?: string;
+  toDate?: string;
+  txtSearch?: string;
+  operatedBy?: string;
+  executedBy?: string;
+  pageStartIndex?: number;
+  pageSize?: number;
+  searchPattern?: string;
+  sortByAsc?: string;
+  sortByDesc?: string;
 }
 
 export interface PaginationParams {
@@ -613,8 +613,10 @@ export class SentinelEmsClient {
   }
 
   async getEntitlement(uid: string) {
+    // FIX 1: added productKeyAttributes to embed so totalQuantity/availableQuantity
+    // are returned on each product key — required for correct activation quantity logic.
     return this.request("GET", `/entitlements/${uid}`, undefined, {
-      embed: "productKeys,customer,activations",
+      embed: "productKeys,customer,activations,productKeyAttributes",
     });
   }
 
@@ -731,15 +733,19 @@ export class SentinelEmsClient {
    * Activate an entitlement.
    *
    * Accepts either:
-   *   - The internal EMS UID (uuid format, e.g. f5957779-bfef-4b34-a477-f28c7b5a8baa)
-   *   - The human-readable eId (e.g. 94265c49-a679-404a-80f0-eada092434c2)
+   *   - The internal EMS UID (uuid format)
+   *   - The human-readable eId
    *
    * The method resolves the internal UID automatically if an eId is passed,
-   * then fetches the full entitlement (with productKeys embed) to extract
-   * pkId values before calling POST /activations/bulkActivate.
+   * then fetches the full entitlement (with productKeys + productKeyAttributes embed)
+   * to extract pkId and quantity values before calling POST /activations/bulkActivate.
    *
    * quantity (optional): number of seats to activate per product key.
-   *   If omitted, falls back to availableQuantity then totalQuantity from the product key.
+   *   Priority order:
+   *     1. Explicit quantity param (always wins)
+   *     2. availableQuantity from product key (if > 0)
+   *     3. totalQuantity from product key (if present)
+   *     4. Omitted entirely — EMS uses its own default
    */
   async activateEntitlement(entitlementUid: string, attrs?: ActivationAttribute[], quantity?: number) {
     // ── Step 1: resolve internal UID ──────────────────────────────────────────
@@ -768,7 +774,7 @@ export class SentinelEmsClient {
       internalUid = found[0].id as string;
     }
 
-    // ── Step 2: fetch full entitlement with productKeys embed ─────────────────
+    // ── Step 2: fetch full entitlement with productKeys + productKeyAttributes ─
     const entRes = await this.getEntitlement(internalUid);
     if (!entRes.ok || !entRes.data) {
       return {
@@ -787,7 +793,6 @@ export class SentinelEmsClient {
     }
 
     // ── Step 3: build activations array ──────────────────────────────────────
-    // quantity param takes priority; falls back to availableQuantity then totalQuantity
     const activations = productKeys.map((pk: any) => {
       const pkId = pk.pkId ?? pk.id;
       if (!pkId) {
@@ -796,18 +801,22 @@ export class SentinelEmsClient {
         );
       }
 
-      const qty =
-        quantity !== undefined
-          ? quantity
-          : pk.availableQuantity !== undefined && pk.availableQuantity > 0
-            ? pk.availableQuantity
-            : (pk.totalQuantity ?? 1);
-
+      // FIX 2: Safe quantity resolution — omit entirely if undetermined rather
+      // than defaulting to 1, which can cause EMS 400 errors on unconfigured keys.
       const activation: Record<string, unknown> = {
         entitlement: { id: internalUid },
         productKey: { id: pkId },
-        quantity: qty,
       };
+
+      if (quantity !== undefined) {
+        // Explicit caller-supplied quantity always wins
+        activation.quantity = quantity;
+      } else if (pk.availableQuantity !== undefined && pk.availableQuantity > 0) {
+        activation.quantity = pk.availableQuantity;
+      } else if (pk.totalQuantity !== undefined) {
+        activation.quantity = pk.totalQuantity;
+      }
+      // else: omit quantity — let EMS apply its own default
 
       if (attrs && attrs.length > 0) {
         activation.activationAttributes = {
