@@ -176,6 +176,51 @@ const TOOLS: any[] = [
   { name: "ems_delete_webhook",         description: "Delete a webhook.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
   { name: "ems_search_webhook_events",  description: "Search webhook delivery events.", inputSchema: { type: "object", properties: { webhook_uid: { type: "string" }, event_id: { type: "string" }, state: { type: "string" }, from: { type: "string" }, to: { type: "string" }, limit: { type: "number" }, offset: { type: "number" } } } },
   { name: "ems_retry_webhook_events",   description: "Retry failed webhook events.", inputSchema: { type: "object", properties: { event_ids: { type: "array", items: { type: "string" }, description: "Specific event IDs to retry; omit to retry all failed events" } } } },
+
+  // ── Transactions ──────────────────────────────────────────────────────────
+  {
+    name: "ems_search_transactions",
+    description: "Search EMS transaction history. Filter by entity type, entity identifier, date range, who made the change, or free-text comment search. Returns a log of operations with timestamp, operator, and affected entity.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        entityType: {
+          type: "string",
+          description: "Entity type to filter by. Available values: Activation, Contact, Customer, Device, Entitlement, LicenseGrant, Partner, PartnerUser, Product, ProductConsumerAuthorization, ReportJob, ReportTemplate, User, Fingerprint, Revocation",
+        },
+        entityIdentifier: {
+          type: "string",
+          description: "Unique identifier of the entity. For Activation: aid. Contact: emailId. Customer: customerName. Device: deviceIdentifier. Entitlement: eid. Partner: partnerName. PartnerUser: partnerUserLoginId. Product: 'productName productVersion' (e.g. 'testPrd 1.0'). User: userId.",
+        },
+        fromDate: { type: "string", description: "Start date for transaction search (YYYY-MM-DD or ISO format)." },
+        toDate:   { type: "string", description: "End date for transaction search (YYYY-MM-DD or ISO format)." },
+        txtSearch:   { type: "string", description: "Free-text search string to match against transaction comments." },
+        operatedBy:  { type: "string", description: "Filter by the user who operated (initiated) the transaction." },
+        executedBy:  { type: "string", description: "Filter by the user who executed the transaction." },
+        pageStartIndex: { type: "number", description: "Starting index for pagination. Default: 0." },
+        pageSize:       { type: "number", description: "Number of records per page." },
+        searchPattern: {
+          type: "string",
+          description: "Search pattern: 'Exact' (exact match), 'Like' (contains), 'Normal' (starts with). Default: Normal.",
+          enum: ["Exact", "Like", "Normal"],
+        },
+        sortByAsc:  { type: "string", description: "Field to sort ascending. Values: operationDate, operatedBy, executedBy, operation, entityType, comments." },
+        sortByDesc: { type: "string", description: "Field to sort descending. Values: operationDate, operatedBy, executedBy, operation, entityType, comments." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "ems_get_transaction_changelog",
+    description: "Get the field-level changelog for a specific EMS transaction. Returns before/after diffs for every field changed in that transaction (e.g. 'state: DRAFT updated to ENABLE'). Use ems_search_transactions first to find the transaction ID.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        transaction_id: { type: "string", description: "Unique identifier (id) of the transaction." },
+      },
+      required: ["transaction_id"],
+    },
+  },
 ];
 
 // ─── Tool dispatcher ──────────────────────────────────────────────────────────
@@ -315,6 +360,28 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
       case "ems_delete_webhook":        result = await client.deleteWebhook(str("uid")!); break;
       case "ems_search_webhook_events": result = await client.searchWebhookEvents({ webhook_uid: str("webhook_uid"), event_id: str("event_id"), state: str("state"), from: str("from"), to: str("to"), limit: num("limit"), offset: num("offset") }); break;
       case "ems_retry_webhook_events":  result = await client.retryWebhookEvents(a["event_ids"] as string[] | undefined); break;
+
+      // ── Transactions ───────────────────────────────────────────────────────
+      case "ems_search_transactions":
+        result = await client.searchTransactions({
+          entityType:       str("entityType"),
+          entityIdentifier: str("entityIdentifier"),
+          fromDate:         str("fromDate"),
+          toDate:           str("toDate"),
+          txtSearch:        str("txtSearch"),
+          operatedBy:       str("operatedBy"),
+          executedBy:       str("executedBy"),
+          pageStartIndex:   num("pageStartIndex"),
+          pageSize:         num("pageSize"),
+          searchPattern:    str("searchPattern"),
+          sortByAsc:        str("sortByAsc"),
+          sortByDesc:       str("sortByDesc"),
+        });
+        break;
+
+      case "ems_get_transaction_changelog":
+        result = await client.getTransactionChangelog(str("transaction_id")!);
+        break;
 
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
