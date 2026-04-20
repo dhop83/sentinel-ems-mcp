@@ -46,10 +46,10 @@ export interface Product {
   version?: string;
   description?: string;
   product_key?: string;
-  namespace_name?: string;       // Namespace name to place the product in (e.g. 'Default')
-  feature_names?: string[];      // Feature names to attach as productFeatures at creation time
-  feature_uids?: string[];       // Feature UIDs to attach as productFeatures at creation time
-  state?: string;                // ENABLE or DRAFT (default ENABLE)
+  namespace_name?: string;
+  feature_names?: string[];
+  feature_uids?: string[];
+  state?: string;
 }
 
 export interface Feature {
@@ -57,8 +57,8 @@ export interface Feature {
   name: string;
   description?: string;
   feature_type?: string;
-  namespace_name?: string;   // resolve namespace by name or refId1 at creation time
-  license_model_name?: string; // resolve license model + enforcement by name at creation time
+  namespace_name?: string;
+  license_model_name?: string;
 }
 
 export interface EntitlementLine {
@@ -75,13 +75,13 @@ export interface Entitlement {
   customer_uid?: string;
   eid?: string;
   description?: string;
-  is_test?: boolean;         // true = test entitlement, supports draft products
+  is_test?: boolean;
   lines?: EntitlementLine[];
 }
 
 export interface EntitlementUpdate {
   customer_uid?: string;
-  state?: string;           // DRAFT | ENABLE | DISABLE
+  state?: string;
   description?: string;
   start_date?: string;
   end_date?: string;
@@ -110,7 +110,7 @@ export interface Namespace {
   uid?: string;
   name: string;
   description?: string;
-  state?: string;           // DRAFT | ENABLE | DISABLE
+  state?: string;
   refId1?: string;
   refId2?: string;
 }
@@ -120,7 +120,7 @@ export interface Webhook {
   name: string;
   url: string;
   description?: string;
-  state?: string;           // ENABLE | DISABLE
+  state?: string;
   includeData?: boolean;
   events?: string[];
   authProfileUid?: string;
@@ -129,8 +129,8 @@ export interface Webhook {
 export interface WebhookEventSearchParams extends PaginationParams {
   webhook_uid?: string;
   event_id?: string;
-  state?: string;           // SUCCESS | FAILED | IN_PROGRESS
-  from?: string;            // YYYY-MM-DD HH:MM
+  state?: string;
+  from?: string;
   to?: string;
 }
 
@@ -473,12 +473,10 @@ export class SentinelEmsClient {
     const match = list.find((lm: any) => lm.name?.toLowerCase() === name.toLowerCase());
     if (!match) throw new Error(`License model not found: "${name}"`);
     const lmUid = match.id as string;
-
     if (match._enforcement?.id) {
       return { lmUid, enforcementUid: match._enforcement.id as string };
     }
-
-    throw new Error(`No enforcement found on license model "${name}" — listLicenseModels did not return enforcement-tagged results`);
+    throw new Error(`No enforcement found on license model "${name}"`);
   }
 
   // ─── Features ────────────────────────────────────────────────────────────────
@@ -528,13 +526,7 @@ export class SentinelEmsClient {
 
   async updateFeature(uid: string, feature: Partial<Feature>) {
     const body: Record<string, unknown> = {};
-
-    if (feature.name !== undefined) {
-      body.nameVersion = {
-        name: feature.name,
-        version: "",
-      };
-    }
+    if (feature.name !== undefined) body.nameVersion = { name: feature.name, version: "" };
     if (feature.description !== undefined) body.description = feature.description;
 
     if (feature.license_model_name) {
@@ -613,8 +605,6 @@ export class SentinelEmsClient {
   }
 
   async getEntitlement(uid: string) {
-    // FIX 1: added productKeyAttributes to embed so totalQuantity/availableQuantity
-    // are returned on each product key — required for correct activation quantity logic.
     return this.request("GET", `/entitlements/${uid}`, undefined, {
       embed: "productKeys,customer,activations,productKeyAttributes",
     });
@@ -644,15 +634,12 @@ export class SentinelEmsClient {
             activationMethod: "FIXED",
             fixedQuantity: 1,
           };
-
           if (line.end_date) {
             pk.expiry = { neverExpires: false, endDate: line.end_date };
           } else {
             pk.expiry = { neverExpires: true };
           }
-
           if (line.start_date) pk.startDate = line.start_date;
-
           return pk;
         }),
       };
@@ -736,31 +723,37 @@ export class SentinelEmsClient {
    *   - The internal EMS UID (uuid format)
    *   - The human-readable eId
    *
-   * The method resolves the internal UID automatically if an eId is passed,
-   * then fetches the full entitlement (with productKeys + productKeyAttributes embed)
-   * to extract pkId and quantity values before calling POST /activations/bulkActivate.
+   * Resolves eId → internal UID automatically if needed, fetches the full
+   * entitlement to extract pkId values, then POSTs to /activations/bulkActivate
+   * using the correct Thales v5 body structure:
    *
-   * quantity (optional): number of seats to activate per product key.
-   *   Priority order:
-   *     1. Explicit quantity param (always wins)
-   *     2. availableQuantity from product key (if > 0)
-   *     3. totalQuantity from product key (if present)
-   *     4. Omitted entirely — EMS uses its own default
+   *   { bulkActivation: { activationProductKeys: { activationProductKey: [{ pkId, activationQuantity }] } } }
+   *
+   * quantity defaults to 1 if not specified.
    */
   async activateEntitlement(entitlementUid: string, attrs?: ActivationAttribute[], quantity?: number) {
-    // ── Step 1: resolve internal UID ──────────────────────────────────────────
+
+    // ── Step 1: resolve eId → internal UID if needed ──────────────────────────
     let internalUid = entitlementUid;
 
     const directRes = await this.getEntitlement(entitlementUid);
     if (!directRes.ok) {
-      // Not an internal UID — try resolving as eId
+      if (directRes.status !== 404) {
+        return {
+          data: directRes.data,
+          status: directRes.status,
+          ok: false,
+          error: `Failed to fetch entitlement: ${directRes.error}`,
+        };
+      }
+      // 404 — try resolving as eId
       const searchRes = await this.listEntitlements({ eid: entitlementUid, limit: 1 });
       if (!searchRes.ok || !searchRes.data) {
         return {
           data: searchRes.data,
           status: searchRes.status,
           ok: false,
-          error: `Failed to resolve entitlement: ${searchRes.error}`,
+          error: `Failed to search by eId: ${searchRes.error}`,
         };
       }
       const found: any[] = (searchRes.data as any)?.entitlements?.entitlement ?? [];
@@ -774,14 +767,15 @@ export class SentinelEmsClient {
       internalUid = found[0].id as string;
     }
 
-    // ── Step 2: fetch full entitlement with productKeys + productKeyAttributes ─
-    const entRes = await this.getEntitlement(internalUid);
+    // ── Step 2: get full entitlement to extract pkId values ───────────────────
+    // Reuse directRes on happy path to avoid a second round-trip
+    const entRes = directRes.ok ? directRes : await this.getEntitlement(internalUid);
     if (!entRes.ok || !entRes.data) {
       return {
         data: entRes.data,
         status: entRes.status,
         ok: false,
-        error: `Failed to fetch entitlement: ${entRes.error}`,
+        error: `Failed to fetch entitlement details: ${entRes.error}`,
       };
     }
 
@@ -792,47 +786,45 @@ export class SentinelEmsClient {
       return { status: 400, ok: false, error: "Entitlement has no product keys to activate" };
     }
 
-    // ── Step 3: build activations array ──────────────────────────────────────
-    const activations = productKeys.map((pk: any) => {
-      const pkId = pk.pkId ?? pk.id;
-      if (!pkId) {
-        throw new Error(
-          `Product key is missing both pkId and id fields: ${JSON.stringify(pk)}`
-        );
-      }
+    // ── Step 3: build correct Thales v5 bulkActivate body ────────────────────
+    const activationQty = quantity ?? 1;
 
-      // FIX 2: Safe quantity resolution — omit entirely if undetermined rather
-      // than defaulting to 1, which can cause EMS 400 errors on unconfigured keys.
-      const activation: Record<string, unknown> = {
-        entitlement: { id: internalUid },
-        productKey: { id: pkId },
-      };
+    let activationProductKeys: Record<string, unknown>[];
+    try {
+      activationProductKeys = productKeys.map((pk: any) => {
+        const pkId = pk.pkId ?? pk.id;
+        if (!pkId) throw new Error(`Product key missing pkId: ${JSON.stringify(pk)}`);
 
-      if (quantity !== undefined) {
-        // Explicit caller-supplied quantity always wins
-        activation.quantity = quantity;
-      } else if (pk.availableQuantity !== undefined && pk.availableQuantity > 0) {
-        activation.quantity = pk.availableQuantity;
-      } else if (pk.totalQuantity !== undefined) {
-        activation.quantity = pk.totalQuantity;
-      }
-      // else: omit quantity — let EMS apply its own default
-
-      if (attrs && attrs.length > 0) {
-        activation.activationAttributes = {
-          activationAttribute: attrs,
+        const item: Record<string, unknown> = {
+          pkId,
+          activationQuantity: activationQty,
         };
-      }
 
-      return activation;
-    });
+        if (attrs && attrs.length > 0) {
+          item.activationAttributes = {
+            activationAttribute: attrs,
+          };
+        }
 
-    // ── Step 4: POST to bulkActivate ──────────────────────────────────────────
+        return item;
+      });
+    } catch (err) {
+      return {
+        status: 400,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
     const body = {
-      activations: { activation: activations },
-      returnResource: true,
+      bulkActivation: {
+        activationProductKeys: {
+          activationProductKey: activationProductKeys,
+        },
+      },
     };
 
+    // ── Step 4: POST to bulkActivate ──────────────────────────────────────────
     return this.request("POST", "/activations/bulkActivate", body);
   }
 
@@ -866,76 +858,40 @@ export class SentinelEmsClient {
       ...(params?.offset !== undefined && { offset: params.offset }),
       ...(params?.customer_uid && { customerUid: params.customer_uid }),
       ...(params?.product_uid && { productUid: params.product_uid }),
-      ...(params?.days_until_expiry !== undefined && {
-        expiresInDays: params.days_until_expiry,
-      }),
+      ...(params?.days_until_expiry !== undefined && { expiresInDays: params.days_until_expiry }),
     });
   }
 
   async generatePermissionTicket(entitlementUid: string, activationUid: string) {
-    return this.request(
-      "POST",
-      `/activations/${activationUid}/generatePermissionTickets`,
-      { entitlementUid }
-    );
+    return this.request("POST", `/activations/${activationUid}/generatePermissionTickets`, { entitlementUid });
   }
 
-  async generateRevocationTicket(
-    entitlementUid: string,
-    activationUid: string,
-    permissionTicket: string
-  ) {
-    return this.request(
-      "POST",
-      `/activations/${activationUid}/revoke`,
-      { permissionTicket, entitlementUid }
-    );
+  async generateRevocationTicket(entitlementUid: string, activationUid: string, permissionTicket: string) {
+    return this.request("POST", `/activations/${activationUid}/revoke`, { permissionTicket, entitlementUid });
   }
 
   async listActivatees(entitlementUid: string, activationUid: string) {
-    return this.request(
-      "GET",
-      `/entitlements/${entitlementUid}/activations/${activationUid}/activatees`
-    );
+    return this.request("GET", `/entitlements/${entitlementUid}/activations/${activationUid}/activatees`);
   }
 
-  async addActivatee(
-    entitlementUid: string,
-    activationUid: string,
-    email: string,
-    first_name?: string,
-    last_name?: string
-  ) {
-    return this.request(
-      "POST",
-      `/entitlements/${entitlementUid}/activations/${activationUid}/activatees`,
-      {
-        activatee: {
-          emailId: email,
-          ...(first_name && { firstName: first_name }),
-          ...(last_name && { lastName: last_name }),
-        },
-      }
-    );
+  async addActivatee(entitlementUid: string, activationUid: string, email: string, first_name?: string, last_name?: string) {
+    return this.request("POST", `/entitlements/${entitlementUid}/activations/${activationUid}/activatees`, {
+      activatee: {
+        emailId: email,
+        ...(first_name && { firstName: first_name }),
+        ...(last_name && { lastName: last_name }),
+      },
+    });
   }
 
-  async removeActivatee(
-    entitlementUid: string,
-    activationUid: string,
-    activateeUid: string
-  ) {
-    return this.request(
-      "DELETE",
-      `/entitlements/${entitlementUid}/activations/${activationUid}/activatees/${activateeUid}`
-    );
+  async removeActivatee(entitlementUid: string, activationUid: string, activateeUid: string) {
+    return this.request("DELETE", `/entitlements/${entitlementUid}/activations/${activationUid}/activatees/${activateeUid}`);
   }
 
   // ─── License Generation ──────────────────────────────────────────────────────
 
   async generateLicense(entitlementUid: string, format?: string) {
-    return this.request("POST", `/entitlements/${entitlementUid}/generate`, {
-      format: format ?? "V2C",
-    });
+    return this.request("POST", `/entitlements/${entitlementUid}/generate`, { format: format ?? "V2C" });
   }
 
   // ─── Namespaces ──────────────────────────────────────────────────────────────
@@ -1006,18 +962,11 @@ export class SentinelEmsClient {
   }
 
   async associateEntitlementToPartner(entitlementUid: string, partnerUid: string) {
-    return this.request(
-      "POST",
-      `/entitlements/${entitlementUid}/channelPartners`,
-      { channelPartner: { id: partnerUid } }
-    );
+    return this.request("POST", `/entitlements/${entitlementUid}/channelPartners`, { channelPartner: { id: partnerUid } });
   }
 
   async removeEntitlementFromPartner(entitlementUid: string, partnerUid: string) {
-    return this.request(
-      "DELETE",
-      `/entitlements/${entitlementUid}/channelPartners/${partnerUid}`
-    );
+    return this.request("DELETE", `/entitlements/${entitlementUid}/channelPartners/${partnerUid}`);
   }
 
   async listEntitlementPartners(entitlementUid: string) {
@@ -1026,12 +975,7 @@ export class SentinelEmsClient {
 
   // ─── Usage / Analytics ───────────────────────────────────────────────────────
 
-  async getUsageSummary(params?: {
-    customer_uid?: string;
-    product_uid?: string;
-    from?: string;
-    to?: string;
-  }) {
+  async getUsageSummary(params?: { customer_uid?: string; product_uid?: string; from?: string; to?: string }) {
     return this.request("GET", "/usage/summary", undefined, {
       ...(params?.customer_uid && { customerUid: params.customer_uid }),
       ...(params?.product_uid && { productUid: params.product_uid }),
@@ -1040,12 +984,7 @@ export class SentinelEmsClient {
     });
   }
 
-  async getUsageDetails(params?: {
-    customer_uid?: string;
-    feature_uid?: string;
-    from?: string;
-    to?: string;
-  }) {
+  async getUsageDetails(params?: { customer_uid?: string; feature_uid?: string; from?: string; to?: string }) {
     return this.request("GET", "/usage/details", undefined, {
       ...(params?.customer_uid && { customerUid: params.customer_uid }),
       ...(params?.feature_uid && { featureUid: params.feature_uid }),
@@ -1086,11 +1025,7 @@ export class SentinelEmsClient {
       }
     }
 
-    return {
-      data: { licenseModels: { licenseModel: allModels } },
-      status: 200,
-      ok: true,
-    };
+    return { data: { licenseModels: { licenseModel: allModels } }, status: 200, ok: true };
   }
 
   async getLicenseModel(enforcementId: string, uid: string) {
@@ -1112,10 +1047,7 @@ export class SentinelEmsClient {
   }
 
   async createWebhook(webhook: Webhook) {
-    const body: Record<string, unknown> = {
-      name: webhook.name,
-      url: webhook.url,
-    };
+    const body: Record<string, unknown> = { name: webhook.name, url: webhook.url };
     if (webhook.description) body.description = webhook.description;
     if (webhook.state) body.state = webhook.state;
     if (webhook.includeData !== undefined) body.includeData = webhook.includeData ? "YES" : "NO";
@@ -1168,20 +1100,18 @@ export class SentinelEmsClient {
 
   async searchTransactions(params: TransactionSearchParams = {}) {
     const query: Record<string, string | number | boolean> = {};
-
-    if (params.entityType)                       query.entityType       = params.entityType;
-    if (params.entityIdentifier)                 query.entityIdentifier = params.entityIdentifier;
-    if (params.fromDate)                         query.fromDate         = params.fromDate;
-    if (params.toDate)                           query.toDate           = params.toDate;
-    if (params.txtSearch)                        query.txtSearch        = params.txtSearch;
-    if (params.operatedBy)                       query.operatedBy       = params.operatedBy;
-    if (params.executedBy)                       query.executedBy       = params.executedBy;
-    if (params.searchPattern)                    query.searchPattern    = params.searchPattern;
-    if (params.sortByAsc)                        query.sortByAsc        = params.sortByAsc;
-    if (params.sortByDesc)                       query.sortByDesc       = params.sortByDesc;
-    if (params.pageStartIndex !== undefined)     query.pageStartIndex   = params.pageStartIndex;
-    if (params.pageSize !== undefined)           query.pageSize         = params.pageSize;
-
+    if (params.entityType)                   query.entityType       = params.entityType;
+    if (params.entityIdentifier)             query.entityIdentifier = params.entityIdentifier;
+    if (params.fromDate)                     query.fromDate         = params.fromDate;
+    if (params.toDate)                       query.toDate           = params.toDate;
+    if (params.txtSearch)                    query.txtSearch        = params.txtSearch;
+    if (params.operatedBy)                   query.operatedBy       = params.operatedBy;
+    if (params.executedBy)                   query.executedBy       = params.executedBy;
+    if (params.searchPattern)                query.searchPattern    = params.searchPattern;
+    if (params.sortByAsc)                    query.sortByAsc        = params.sortByAsc;
+    if (params.sortByDesc)                   query.sortByDesc       = params.sortByDesc;
+    if (params.pageStartIndex !== undefined) query.pageStartIndex   = params.pageStartIndex;
+    if (params.pageSize !== undefined)       query.pageSize         = params.pageSize;
     return this.request("GET", "/transactions", undefined, query);
   }
 
