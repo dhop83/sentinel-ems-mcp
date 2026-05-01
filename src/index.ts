@@ -37,8 +37,6 @@ const TOOLS: any[] = [
       type: "object",
       properties: {
         entitlement_uid: { type: "string", description: "Entitlement UID or eId" },
-        // FIX 3: quantity explicitly listed as a top-level required-eligible param
-        // so the MCP tool registry surfaces it correctly after redeploy.
         quantity: { type: "number", description: "Number of seats to activate per product key (defaults to available quantity)" },
         attrs: {
           type: "array",
@@ -69,8 +67,10 @@ const TOOLS: any[] = [
   // ── Customers ─────────────────────────────────────────────────────────────
   { name: "ems_list_customers",  description: "List all customers in Sentinel EMS. Supports filtering by name or email and pagination.", inputSchema: { type: "object", properties: { name: { type: "string", description: "Filter by customer name" }, email: { type: "string" }, limit: { type: "number" }, offset: { type: "number" } } } },
   { name: "ems_get_customer",    description: "Get full details of a customer by UID.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
-  { name: "ems_create_customer", description: "Create a new customer in Sentinel EMS.", inputSchema: { type: "object", properties: { name: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, ref_id: { type: "string" }, contact: { type: "string" }, country: { type: "string" }, city: { type: "string" }, address: { type: "string" }, description: { type: "string" } }, required: ["name"] } },
-  { name: "ems_update_customer", description: "Update fields on an existing customer.", inputSchema: { type: "object", properties: { uid: { type: "string" }, name: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, contact: { type: "string" }, country: { type: "string" }, description: { type: "string" } }, required: ["uid"] } },
+  // ── PATCHED: added crm_id and ref_id ──────────────────────────────────────
+  { name: "ems_create_customer", description: "Create a new customer in Sentinel EMS.", inputSchema: { type: "object", properties: { name: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, ref_id: { type: "string", description: "Reference identifier of the customer as used by external ERP/CRM systems" }, crm_id: { type: "string", description: "CRM identification number (crmId) of the customer" }, contact: { type: "string" }, country: { type: "string" }, city: { type: "string" }, address: { type: "string" }, description: { type: "string" } }, required: ["name"] } },
+  { name: "ems_update_customer", description: "Update fields on an existing customer.", inputSchema: { type: "object", properties: { uid: { type: "string" }, name: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, ref_id: { type: "string", description: "Reference identifier of the customer as used by external ERP/CRM systems" }, crm_id: { type: "string", description: "CRM identification number (crmId) of the customer" }, contact: { type: "string" }, country: { type: "string" }, city: { type: "string" }, address: { type: "string" }, description: { type: "string" } }, required: ["uid"] } },
+  // ─────────────────────────────────────────────────────────────────────────
   { name: "ems_delete_customer", description: "Delete a customer from Sentinel EMS.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
 
   // ── Contacts ──────────────────────────────────────────────────────────────
@@ -318,7 +318,6 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
       case "ems_batch_create_entitlements": result = await client.batchCreateEntitlements(a["entitlements"] as any[]); break;
 
       // ── Activations ────────────────────────────────────────────────────────
-      // FIX 3: quantity now correctly extracted via num() and passed through
       case "ems_activate_entitlement":        result = await client.activateEntitlement(str("entitlement_uid")!, a["attrs"], num("quantity")); break;
       case "ems_list_activations":            result = await client.getActivations(str("entitlement_uid")!); break;
       case "ems_get_activation":              result = await client.getActivation(str("entitlement_uid")!, str("activation_uid")!); break;
@@ -438,7 +437,7 @@ async function handleJsonRpc(msg: any): Promise<any> {
         result = {
           protocolVersion: params?.protocolVersion ?? "2025-11-25",
           capabilities: { tools: {} },
-          serverInfo: { name: "sentinel-ems-mcp", version: "2.1.1" },
+          serverInfo: { name: "sentinel-ems-mcp", version: "2.1.2" },
         };
         break;
       case "tools/list":
@@ -470,7 +469,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get("/health", (_req, res) => res.json({ status: "ok", server: "sentinel-ems-mcp", version: "2.1.1" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", server: "sentinel-ems-mcp", version: "2.1.2" }));
 
 // ── OAuth discovery ──────────────────────────────────────────────────────────
 app.get("/.well-known/oauth-protected-resource", (req, res) => {
