@@ -21,6 +21,7 @@ export interface Customer {
   email?: string;
   phone?: string;
   ref_id?: string;
+  crm_id?: string;
   contact?: string;
   country?: string;
   city?: string;
@@ -240,11 +241,35 @@ export class SentinelEmsClient {
   }
 
   async createCustomer(customer: Customer) {
-    return this.request("POST", "/customers", { customer });
+    // Explicitly build the body so crmId and refId are always forwarded
+    const body: Record<string, unknown> = {};
+    if (customer.name)        body.name        = customer.name;
+    if (customer.email)       body.emailId      = customer.email;
+    if (customer.phone)       body.phone        = customer.phone;
+    if (customer.ref_id)      body.refId        = customer.ref_id;
+    if (customer.crm_id)      body.crmId        = customer.crm_id;
+    if (customer.contact)     body.contact      = customer.contact;
+    if (customer.country)     body.country      = customer.country;
+    if (customer.city)        body.city         = customer.city;
+    if (customer.address)     body.address      = customer.address;
+    if (customer.description) body.description  = customer.description;
+    return this.request("POST", "/customers", { customer: body });
   }
 
   async updateCustomer(uid: string, customer: Partial<Customer>) {
-    return this.request("PUT", `/customers/${uid}`, { customer });
+    // Explicitly build the body so crmId and refId are always forwarded
+    const body: Record<string, unknown> = {};
+    if (customer.name        !== undefined) body.name        = customer.name;
+    if (customer.email       !== undefined) body.emailId      = customer.email;
+    if (customer.phone       !== undefined) body.phone        = customer.phone;
+    if (customer.ref_id      !== undefined) body.refId        = customer.ref_id;
+    if (customer.crm_id      !== undefined) body.crmId        = customer.crm_id;
+    if (customer.contact     !== undefined) body.contact      = customer.contact;
+    if (customer.country     !== undefined) body.country      = customer.country;
+    if (customer.city        !== undefined) body.city         = customer.city;
+    if (customer.address     !== undefined) body.address      = customer.address;
+    if (customer.description !== undefined) body.description  = customer.description;
+    return this.request("PATCH", `/customers/${uid}`, { customer: body });
   }
 
   async deleteCustomer(uid: string) {
@@ -716,67 +741,28 @@ export class SentinelEmsClient {
 
   // ─── Activations ─────────────────────────────────────────────────────────────
 
-  /**
-   * Activate an entitlement.
-   *
-   * Accepts either:
-   *   - The internal EMS UID (uuid format)
-   *   - The human-readable eId
-   *
-   * Resolves eId → internal UID automatically if needed, fetches the full
-   * entitlement to extract pkId values, then POSTs to /activations/bulkActivate
-   * using the correct Thales v5 body structure:
-   *
-   *   { bulkActivation: { activationProductKeys: { activationProductKey: [{ pkId, activationQuantity }] } } }
-   *
-   * quantity defaults to 1 if not specified.
-   */
   async activateEntitlement(entitlementUid: string, attrs?: ActivationAttribute[], quantity?: number) {
-
-    // ── Step 1: resolve eId → internal UID if needed ──────────────────────────
     let internalUid = entitlementUid;
 
     const directRes = await this.getEntitlement(entitlementUid);
     if (!directRes.ok) {
       if (directRes.status !== 404) {
-        return {
-          data: directRes.data,
-          status: directRes.status,
-          ok: false,
-          error: `Failed to fetch entitlement: ${directRes.error}`,
-        };
+        return { data: directRes.data, status: directRes.status, ok: false, error: `Failed to fetch entitlement: ${directRes.error}` };
       }
-      // 404 — try resolving as eId
       const searchRes = await this.listEntitlements({ eid: entitlementUid, limit: 1 });
       if (!searchRes.ok || !searchRes.data) {
-        return {
-          data: searchRes.data,
-          status: searchRes.status,
-          ok: false,
-          error: `Failed to search by eId: ${searchRes.error}`,
-        };
+        return { data: searchRes.data, status: searchRes.status, ok: false, error: `Failed to search by eId: ${searchRes.error}` };
       }
       const found: any[] = (searchRes.data as any)?.entitlements?.entitlement ?? [];
       if (found.length === 0) {
-        return {
-          status: 404,
-          ok: false,
-          error: `No entitlement found with eId or id: "${entitlementUid}"`,
-        };
+        return { status: 404, ok: false, error: `No entitlement found with eId or id: "${entitlementUid}"` };
       }
       internalUid = found[0].id as string;
     }
 
-    // ── Step 2: get full entitlement to extract pkId values ───────────────────
-    // Reuse directRes on happy path to avoid a second round-trip
     const entRes = directRes.ok ? directRes : await this.getEntitlement(internalUid);
     if (!entRes.ok || !entRes.data) {
-      return {
-        data: entRes.data,
-        status: entRes.status,
-        ok: false,
-        error: `Failed to fetch entitlement details: ${entRes.error}`,
-      };
+      return { data: entRes.data, status: entRes.status, ok: false, error: `Failed to fetch entitlement details: ${entRes.error}` };
     }
 
     const ent: any = (entRes.data as any).entitlement ?? entRes.data;
@@ -786,7 +772,6 @@ export class SentinelEmsClient {
       return { status: 400, ok: false, error: "Entitlement has no product keys to activate" };
     }
 
-    // ── Step 3: build correct Thales v5 bulkActivate body ────────────────────
     const activationQty = quantity ?? 1;
 
     let activationProductKeys: Record<string, unknown>[];
@@ -794,38 +779,21 @@ export class SentinelEmsClient {
       activationProductKeys = productKeys.map((pk: any) => {
         const pkId = pk.pkId ?? pk.id;
         if (!pkId) throw new Error(`Product key missing pkId: ${JSON.stringify(pk)}`);
-
-        const item: Record<string, unknown> = {
-          pkId,
-          activationQuantity: activationQty,
-        };
-
+        const item: Record<string, unknown> = { pkId, activationQuantity: activationQty };
         if (attrs && attrs.length > 0) {
-          item.activationAttributes = {
-            activationAttribute: attrs,
-          };
+          item.activationAttributes = { activationAttribute: attrs };
         }
-
         return item;
       });
     } catch (err) {
-      return {
-        status: 400,
-        ok: false,
-        error: err instanceof Error ? err.message : String(err),
-      };
+      return { status: 400, ok: false, error: err instanceof Error ? err.message : String(err) };
     }
 
-    const body = {
+    return this.request("POST", "/activations/bulkActivate", {
       bulkActivation: {
-        activationProductKeys: {
-          activationProductKey: activationProductKeys,
-        },
+        activationProductKeys: { activationProductKey: activationProductKeys },
       },
-    };
-
-    // ── Step 4: POST to bulkActivate ──────────────────────────────────────────
-    return this.request("POST", "/activations/bulkActivate", body);
+    });
   }
 
   async getActivations(entitlementUid: string) {
