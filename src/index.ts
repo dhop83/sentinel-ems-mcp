@@ -67,10 +67,8 @@ const TOOLS: any[] = [
   // ── Customers ─────────────────────────────────────────────────────────────
   { name: "ems_list_customers",  description: "List all customers in Sentinel EMS. Supports filtering by name or email and pagination.", inputSchema: { type: "object", properties: { name: { type: "string", description: "Filter by customer name" }, email: { type: "string" }, limit: { type: "number" }, offset: { type: "number" } } } },
   { name: "ems_get_customer",    description: "Get full details of a customer by UID.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
-  // ── PATCHED: added crm_id and ref_id ──────────────────────────────────────
   { name: "ems_create_customer", description: "Create a new customer in Sentinel EMS.", inputSchema: { type: "object", properties: { name: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, ref_id: { type: "string", description: "Reference identifier of the customer as used by external ERP/CRM systems" }, crm_id: { type: "string", description: "CRM identification number (crmId) of the customer" }, contact: { type: "string" }, country: { type: "string" }, city: { type: "string" }, address: { type: "string" }, description: { type: "string" } }, required: ["name"] } },
   { name: "ems_update_customer", description: "Update fields on an existing customer.", inputSchema: { type: "object", properties: { uid: { type: "string" }, name: { type: "string" }, email: { type: "string" }, phone: { type: "string" }, ref_id: { type: "string", description: "Reference identifier of the customer as used by external ERP/CRM systems" }, crm_id: { type: "string", description: "CRM identification number (crmId) of the customer" }, contact: { type: "string" }, country: { type: "string" }, city: { type: "string" }, address: { type: "string" }, description: { type: "string" } }, required: ["uid"] } },
-  // ─────────────────────────────────────────────────────────────────────────
   { name: "ems_delete_customer", description: "Delete a customer from Sentinel EMS.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
 
   // ── Contacts ──────────────────────────────────────────────────────────────
@@ -152,7 +150,26 @@ const TOOLS: any[] = [
   { name: "ems_list_entitlements",          description: "List entitlements. Filter by customer UID or EID.", inputSchema: { type: "object", properties: { customer_uid: { type: "string" }, eid: { type: "string" }, limit: { type: "number" }, offset: { type: "number" } } } },
   { name: "ems_get_entitlement",            description: "Get entitlement by UID.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
   { name: "ems_create_entitlement",         description: "Create a new entitlement for a customer.", inputSchema: { type: "object", properties: { customer_uid: { type: "string" }, description: { type: "string" }, is_test: { type: "boolean" }, lines: { type: "array", items: { type: "object", properties: { product_uid: { type: "string" }, qty: { type: "number" }, start_date: { type: "string" }, end_date: { type: "string" } }, required: ["product_uid"] } } } } },
-  { name: "ems_update_entitlement",         description: "Update an entitlement (state, description, dates).", inputSchema: { type: "object", properties: { uid: { type: "string" }, state: { type: "string" }, description: { type: "string" }, send_notification: { type: "boolean" }, cc_email: { type: "string" }, ref_id1: { type: "string" }, ref_id2: { type: "string" } }, required: ["uid"] } },
+  // ── PATCHED: added customer_uid for reassignment (e.g. post-acquisition) ──
+  {
+    name: "ems_update_entitlement",
+    description: "Update an entitlement (state, description, dates, or customer). Use customer_uid to reassign an entitlement to a different customer — for example, when a customer is acquired and all entitlements must move to the acquiring company.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        uid:               { type: "string", description: "Entitlement UID" },
+        customer_uid:      { type: "string", description: "Reassign entitlement to this customer UID (e.g. after an acquisition)" },
+        state:             { type: "string", description: "New state: ENABLE, DISABLE, etc." },
+        description:       { type: "string" },
+        send_notification: { type: "boolean" },
+        cc_email:          { type: "string" },
+        ref_id1:           { type: "string" },
+        ref_id2:           { type: "string" },
+      },
+      required: ["uid"],
+    },
+  },
+  // ─────────────────────────────────────────────────────────────────────────
   { name: "ems_enable_entitlement",         description: "Enable an entitlement (DRAFT → ENABLE).", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
   { name: "ems_split_entitlement",          description: "Split an entitlement into a child entitlement.", inputSchema: { type: "object", properties: { uid: { type: "string" }, qty: { type: "number" }, customer_uid: { type: "string" } }, required: ["uid", "qty"] } },
   { name: "ems_delete_entitlement",         description: "Delete an entitlement.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
@@ -437,7 +454,7 @@ async function handleJsonRpc(msg: any): Promise<any> {
         result = {
           protocolVersion: params?.protocolVersion ?? "2025-11-25",
           capabilities: { tools: {} },
-          serverInfo: { name: "sentinel-ems-mcp", version: "2.1.2" },
+          serverInfo: { name: "sentinel-ems-mcp", version: "2.1.3" },
         };
         break;
       case "tools/list":
@@ -469,7 +486,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get("/health", (_req, res) => res.json({ status: "ok", server: "sentinel-ems-mcp", version: "2.1.2" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", server: "sentinel-ems-mcp", version: "2.1.3" }));
 
 // ── OAuth discovery ──────────────────────────────────────────────────────────
 app.get("/.well-known/oauth-protected-resource", (req, res) => {
