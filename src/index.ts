@@ -150,21 +150,35 @@ const TOOLS: any[] = [
   { name: "ems_list_entitlements",          description: "List entitlements. Filter by customer UID or EID.", inputSchema: { type: "object", properties: { customer_uid: { type: "string" }, eid: { type: "string" }, limit: { type: "number" }, offset: { type: "number" } } } },
   { name: "ems_get_entitlement",            description: "Get entitlement by UID.", inputSchema: { type: "object", properties: { uid: { type: "string" } }, required: ["uid"] } },
   { name: "ems_create_entitlement",         description: "Create a new entitlement for a customer.", inputSchema: { type: "object", properties: { customer_uid: { type: "string" }, description: { type: "string" }, is_test: { type: "boolean" }, lines: { type: "array", items: { type: "object", properties: { product_uid: { type: "string" }, qty: { type: "number" }, start_date: { type: "string" }, end_date: { type: "string" } }, required: ["product_uid"] } } } } },
-  // ── PATCHED: added customer_uid for reassignment (e.g. post-acquisition) ──
+  // ── PATCHED v2.1.4: customer_uid reassignment + lines for product key expansion ──
   {
     name: "ems_update_entitlement",
-    description: "Update an entitlement (state, description, dates, or customer). Use customer_uid to reassign an entitlement to a different customer — for example, when a customer is acquired and all entitlements must move to the acquiring company.",
+    description: "Update an existing entitlement. Use customer_uid to reassign to a different customer (e.g. post-acquisition). Use lines to add new product keys to the entitlement — EMS PATCH appends lines without removing existing ones, enabling product expansion on live entitlements.",
     inputSchema: {
       type: "object",
       properties: {
         uid:               { type: "string", description: "Entitlement UID" },
-        customer_uid:      { type: "string", description: "Reassign entitlement to this customer UID (e.g. after an acquisition)" },
-        state:             { type: "string", description: "New state: ENABLE, DISABLE, etc." },
+        customer_uid:      { type: "string", description: "Reassign entitlement to this customer UID" },
+        state:             { type: "string", description: "New state: ENABLE, DISABLE, DRAFT" },
         description:       { type: "string" },
         send_notification: { type: "boolean" },
         cc_email:          { type: "string" },
         ref_id1:           { type: "string" },
         ref_id2:           { type: "string" },
+        lines: {
+          type: "array",
+          description: "New product key lines to append to the entitlement. Does not affect existing product keys.",
+          items: {
+            type: "object",
+            properties: {
+              product_uid: { type: "string", description: "UID of the product to add" },
+              qty:         { type: "number", description: "Total quantity (default: 1)" },
+              start_date:  { type: "string", description: "Start date YYYY-MM-DD" },
+              end_date:    { type: "string", description: "End date YYYY-MM-DD. Omit for never-expires." },
+            },
+            required: ["product_uid"],
+          },
+        },
       },
       required: ["uid"],
     },
@@ -221,43 +235,33 @@ const TOOLS: any[] = [
   // ── Transactions ──────────────────────────────────────────────────────────
   {
     name: "ems_search_transactions",
-    description: "Search EMS transaction history. Filter by entity type, entity identifier, date range, who made the change, or free-text comment search. Returns a log of operations with timestamp, operator, and affected entity.",
+    description: "Search EMS transaction history.",
     inputSchema: {
       type: "object",
       properties: {
-        entityType: {
-          type: "string",
-          description: "Entity type to filter by. Available values: Activation, Contact, Customer, Device, Entitlement, LicenseGrant, Partner, PartnerUser, Product, ProductConsumerAuthorization, ReportJob, ReportTemplate, User, Fingerprint, Revocation",
-        },
-        entityIdentifier: {
-          type: "string",
-          description: "Unique identifier of the entity. For Activation: aid. Contact: emailId. Customer: customerName. Device: deviceIdentifier. Entitlement: eid. Partner: partnerName. PartnerUser: partnerUserLoginId. Product: 'productName productVersion' (e.g. 'testPrd 1.0'). User: userId.",
-        },
-        fromDate: { type: "string", description: "Start date for transaction search (YYYY-MM-DD or ISO format)." },
-        toDate:   { type: "string", description: "End date for transaction search (YYYY-MM-DD or ISO format)." },
-        txtSearch:   { type: "string", description: "Free-text search string to match against transaction comments." },
-        operatedBy:  { type: "string", description: "Filter by the user who operated (initiated) the transaction." },
-        executedBy:  { type: "string", description: "Filter by the user who executed the transaction." },
-        pageStartIndex: { type: "number", description: "Starting index for pagination. Default: 0." },
-        pageSize:       { type: "number", description: "Number of records per page." },
-        searchPattern: {
-          type: "string",
-          description: "Search pattern: 'Exact' (exact match), 'Like' (contains), 'Normal' (starts with). Default: Normal.",
-          enum: ["Exact", "Like", "Normal"],
-        },
-        sortByAsc:  { type: "string", description: "Field to sort ascending. Values: operationDate, operatedBy, executedBy, operation, entityType, comments." },
-        sortByDesc: { type: "string", description: "Field to sort descending. Values: operationDate, operatedBy, executedBy, operation, entityType, comments." },
+        entityType:       { type: "string", description: "Activation, Contact, Customer, Device, Entitlement, LicenseGrant, Partner, PartnerUser, Product, ProductConsumerAuthorization, ReportJob, ReportTemplate, User, Fingerprint, Revocation" },
+        entityIdentifier: { type: "string" },
+        fromDate:         { type: "string", description: "YYYY-MM-DD" },
+        toDate:           { type: "string", description: "YYYY-MM-DD" },
+        txtSearch:        { type: "string" },
+        operatedBy:       { type: "string" },
+        executedBy:       { type: "string" },
+        pageStartIndex:   { type: "number" },
+        pageSize:         { type: "number" },
+        searchPattern:    { type: "string", enum: ["Exact", "Like", "Normal"] },
+        sortByAsc:        { type: "string" },
+        sortByDesc:       { type: "string" },
       },
       required: [],
     },
   },
   {
     name: "ems_get_transaction_changelog",
-    description: "Get the field-level changelog for a specific EMS transaction. Returns before/after diffs for every field changed in that transaction (e.g. 'state: DRAFT updated to ENABLE'). Use ems_search_transactions first to find the transaction ID.",
+    description: "Get the field-level changelog for a specific EMS transaction.",
     inputSchema: {
       type: "object",
       properties: {
-        transaction_id: { type: "string", description: "Unique identifier (id) of the transaction." },
+        transaction_id: { type: "string" },
       },
       required: ["transaction_id"],
     },
@@ -274,23 +278,19 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
     let result: any;
     switch (name) {
 
-      // ── System ─────────────────────────────────────────────────────────────
       case "ems_ping": result = await client.ping(); break;
 
-      // ── Customers ──────────────────────────────────────────────────────────
       case "ems_list_customers":  result = await client.listCustomers({ name: str("name"), email: str("email"), limit: num("limit"), offset: num("offset") }); break;
       case "ems_get_customer":    result = await client.getCustomer(str("uid")!); break;
       case "ems_create_customer": result = await client.createCustomer(a); break;
       case "ems_update_customer": { const { uid, ...rest } = a; result = await client.updateCustomer(uid, rest); break; }
       case "ems_delete_customer": result = await client.deleteCustomer(str("uid")!); break;
 
-      // ── Contacts ───────────────────────────────────────────────────────────
       case "ems_list_contacts":   result = await client.listContacts({ customer_uid: str("customer_uid"), email: str("email"), limit: num("limit"), offset: num("offset") }); break;
       case "ems_get_contact":     result = await client.getContact(str("uid")!); break;
       case "ems_create_contact":  result = await client.createContact(a); break;
       case "ems_update_contact":  { const { uid, ...rest } = a; result = await client.updateContact(uid, rest); break; }
 
-      // ── Products ───────────────────────────────────────────────────────────
       case "ems_list_products":   result = await client.listProducts({ name: str("name"), limit: num("limit"), offset: num("offset") }); break;
       case "ems_get_product":     result = await client.getProduct(str("uid")!); break;
       case "ems_create_product": { const pa = { ...a }; if (typeof pa.feature_names === "string") pa.feature_names = pa.feature_names.split(",").map((s: string) => s.trim()).filter(Boolean); if (typeof pa.feature_uids === "string") pa.feature_uids = pa.feature_uids.split(",").map((s: string) => s.trim()).filter(Boolean); result = await client.createProduct(pa); break; }
@@ -300,15 +300,10 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
       case "ems_add_feature_to_product": {
         const featureNames = str("feature_names")?.split(",").map((s: string) => s.trim()).filter(Boolean) ?? [];
         const featureUids  = str("feature_uids")?.split(",").map((s: string) => s.trim()).filter(Boolean) ?? [];
-        result = await client.addFeatureToProduct({
-          product_uid:   str("product_uid")!,
-          feature_names: featureNames,
-          feature_uids:  featureUids,
-        });
+        result = await client.addFeatureToProduct({ product_uid: str("product_uid")!, feature_names: featureNames, feature_uids: featureUids });
         break;
       }
 
-      // ── Features ───────────────────────────────────────────────────────────
       case "ems_list_features":   result = await client.listFeatures({ name: str("name"), limit: num("limit"), offset: num("offset") }); break;
       case "ems_get_feature":     result = await client.getFeature(str("uid")!); break;
       case "ems_create_feature":  result = await client.createFeature(a); break;
@@ -323,10 +318,10 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
         });
         break;
 
-      // ── Entitlements ───────────────────────────────────────────────────────
       case "ems_list_entitlements":         result = await client.listEntitlements({ customer_uid: str("customer_uid"), eid: str("eid"), limit: num("limit"), offset: num("offset") }); break;
       case "ems_get_entitlement":           result = await client.getEntitlement(str("uid")!); break;
       case "ems_create_entitlement":        result = await client.createEntitlement(a); break;
+      // ── PATCHED: { uid, ...rest } passes lines + customer_uid + state through to client ──
       case "ems_update_entitlement":        { const { uid, ...rest } = a; result = await client.updateEntitlement(uid, rest); break; }
       case "ems_enable_entitlement":        result = await client.enableEntitlement(str("uid")!); break;
       case "ems_split_entitlement":         result = await client.splitEntitlement(str("uid")!, num("qty")!, str("customer_uid")); break;
@@ -334,7 +329,6 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
       case "ems_get_entitled_features":     result = await client.getEntitledFeatures(str("uid")!); break;
       case "ems_batch_create_entitlements": result = await client.batchCreateEntitlements(a["entitlements"] as any[]); break;
 
-      // ── Activations ────────────────────────────────────────────────────────
       case "ems_activate_entitlement":        result = await client.activateEntitlement(str("entitlement_uid")!, a["attrs"], num("quantity")); break;
       case "ems_list_activations":            result = await client.getActivations(str("entitlement_uid")!); break;
       case "ems_get_activation":              result = await client.getActivation(str("entitlement_uid")!, str("activation_uid")!); break;
@@ -344,12 +338,10 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
       case "ems_generate_permission_ticket":  result = await client.generatePermissionTicket(str("entitlement_uid")!, str("activation_uid")!); break;
       case "ems_generate_revocation_ticket":  result = await client.generateRevocationTicket(str("entitlement_uid")!, str("activation_uid")!, str("permission_ticket")!); break;
 
-      // ── Activatees ─────────────────────────────────────────────────────────
       case "ems_list_activatees":   result = await client.listActivatees(str("entitlement_uid")!, str("activation_uid")!); break;
       case "ems_add_activatee":     result = await client.addActivatee(str("entitlement_uid")!, str("activation_uid")!, str("email")!, str("first_name"), str("last_name")); break;
       case "ems_remove_activatee":  result = await client.removeActivatee(str("entitlement_uid")!, str("activation_uid")!, str("activatee_uid")!); break;
 
-      // ── Channel Partners ───────────────────────────────────────────────────
       case "ems_list_channel_partners":             result = await client.listChannelPartners({ name: str("name"), limit: num("limit"), offset: num("offset") }); break;
       case "ems_get_channel_partner":               result = await client.getChannelPartner(str("uid")!); break;
       case "ems_create_channel_partner":            result = await client.createChannelPartner(a); break;
@@ -359,67 +351,43 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
       case "ems_remove_entitlement_from_partner":   result = await client.removeEntitlementFromPartner(str("entitlement_uid")!, str("partner_uid")!); break;
       case "ems_list_entitlement_partners":         result = await client.listEntitlementPartners(str("entitlement_uid")!); break;
 
-      // ── Namespaces ─────────────────────────────────────────────────────────
       case "ems_list_namespaces":   result = await client.listNamespaces({ limit: num("limit"), offset: num("offset") }); break;
       case "ems_get_namespace":     result = await client.getNamespace(str("uid")!); break;
       case "ems_create_namespace":  result = await client.createNamespace(a); break;
       case "ems_update_namespace":  { const { uid, ...rest } = a; result = await client.updateNamespace(uid, rest); break; }
       case "ems_patch_namespace":   { const { uid, ...rest } = a; result = await client.patchNamespace(uid, rest); break; }
 
-      // ── License Models ─────────────────────────────────────────────────────
       case "ems_list_license_models": result = await client.listLicenseModels(); break;
       case "ems_get_license_model":   result = await client.getLicenseModel(str("enforcementId")!, str("uid")!); break;
 
-      // ── License Generation ─────────────────────────────────────────────────
       case "ems_generate_license": result = await client.generateLicense(str("entitlement_uid")!, str("format")); break;
 
-      // ── Usage ──────────────────────────────────────────────────────────────
       case "ems_get_usage_summary": result = await client.getUsageSummary({ customer_uid: str("customer_uid"), product_uid: str("product_uid"), from: str("from"), to: str("to") }); break;
       case "ems_get_usage_details": result = await client.getUsageDetails({ customer_uid: str("customer_uid"), feature_uid: str("feature_uid"), from: str("from"), to: str("to") }); break;
 
-      // ── Webhooks ───────────────────────────────────────────────────────────
       case "ems_list_webhooks":         result = await client.listWebhooks({ name: str("name"), limit: num("limit"), offset: num("offset") }); break;
       case "ems_get_webhook":           result = await client.getWebhook(str("uid")!); break;
       case "ems_create_webhook":
-        result = await client.createWebhook({
-          name: str("name")!, url: str("url")!,
-          description: str("description"), state: str("state"),
-          includeData: bool("include_data"),
-          events: a["events"] as string[] | undefined,
-          authProfileUid: str("auth_profile_uid"),
-        });
+        result = await client.createWebhook({ name: str("name")!, url: str("url")!, description: str("description"), state: str("state"), includeData: bool("include_data"), events: a["events"] as string[] | undefined, authProfileUid: str("auth_profile_uid") });
         break;
       case "ems_update_webhook": {
         const { uid, ...wr } = a;
-        result = await client.updateWebhook(uid, {
-          name: wr["name"], url: wr["url"], description: wr["description"],
-          state: wr["state"], includeData: wr["include_data"],
-          events: wr["events"], authProfileUid: wr["auth_profile_uid"],
-        });
+        result = await client.updateWebhook(uid, { name: wr["name"], url: wr["url"], description: wr["description"], state: wr["state"], includeData: wr["include_data"], events: wr["events"], authProfileUid: wr["auth_profile_uid"] });
         break;
       }
       case "ems_delete_webhook":        result = await client.deleteWebhook(str("uid")!); break;
       case "ems_search_webhook_events": result = await client.searchWebhookEvents({ webhook_uid: str("webhook_uid"), event_id: str("event_id"), state: str("state"), from: str("from"), to: str("to"), limit: num("limit"), offset: num("offset") }); break;
       case "ems_retry_webhook_events":  result = await client.retryWebhookEvents(a["event_ids"] as string[] | undefined); break;
 
-      // ── Transactions ───────────────────────────────────────────────────────
       case "ems_search_transactions":
         result = await client.searchTransactions({
-          entityType:       str("entityType"),
-          entityIdentifier: str("entityIdentifier"),
-          fromDate:         str("fromDate"),
-          toDate:           str("toDate"),
-          txtSearch:        str("txtSearch"),
-          operatedBy:       str("operatedBy"),
-          executedBy:       str("executedBy"),
-          pageStartIndex:   num("pageStartIndex"),
-          pageSize:         num("pageSize"),
-          searchPattern:    str("searchPattern"),
-          sortByAsc:        str("sortByAsc"),
-          sortByDesc:       str("sortByDesc"),
+          entityType: str("entityType"), entityIdentifier: str("entityIdentifier"),
+          fromDate: str("fromDate"), toDate: str("toDate"), txtSearch: str("txtSearch"),
+          operatedBy: str("operatedBy"), executedBy: str("executedBy"),
+          pageStartIndex: num("pageStartIndex"), pageSize: num("pageSize"),
+          searchPattern: str("searchPattern"), sortByAsc: str("sortByAsc"), sortByDesc: str("sortByDesc"),
         });
         break;
-
       case "ems_get_transaction_changelog":
         result = await client.getTransactionChangelog(str("transaction_id")!);
         break;
@@ -441,39 +409,19 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
 // ─── JSON-RPC dispatcher ──────────────────────────────────────────────────────
 async function handleJsonRpc(msg: any): Promise<any> {
   const { method, params, id } = msg;
-
-  if (id === undefined) {
-    console.log(`Notification: ${method}`);
-    return null;
-  }
-
+  if (id === undefined) { console.log(`Notification: ${method}`); return null; }
   try {
     let result: any;
     switch (method) {
       case "initialize":
-        result = {
-          protocolVersion: params?.protocolVersion ?? "2025-11-25",
-          capabilities: { tools: {} },
-          serverInfo: { name: "sentinel-ems-mcp", version: "2.1.3" },
-        };
+        result = { protocolVersion: params?.protocolVersion ?? "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "sentinel-ems-mcp", version: "2.1.4" } };
         break;
-      case "tools/list":
-        result = { tools: TOOLS };
-        break;
-      case "tools/call":
-        result = await callTool(params.name, params.arguments ?? {});
-        break;
-      case "ping":
-        result = {};
-        break;
-      case "resources/list":
-        result = { resources: [] };
-        break;
-      case "prompts/list":
-        result = { prompts: [] };
-        break;
-      default:
-        return { jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${method}` } };
+      case "tools/list":   result = { tools: TOOLS }; break;
+      case "tools/call":   result = await callTool(params.name, params.arguments ?? {}); break;
+      case "ping":         result = {}; break;
+      case "resources/list": result = { resources: [] }; break;
+      case "prompts/list": result = { prompts: [] }; break;
+      default: return { jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${method}` } };
     }
     return { jsonrpc: "2.0", id, result };
   } catch (err) {
@@ -486,9 +434,8 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get("/health", (_req, res) => res.json({ status: "ok", server: "sentinel-ems-mcp", version: "2.1.3" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", server: "sentinel-ems-mcp", version: "2.1.4" }));
 
-// ── OAuth discovery ──────────────────────────────────────────────────────────
 app.get("/.well-known/oauth-protected-resource", (req, res) => {
   const base = BASE_URL || `${req.protocol}://${req.get("host")}`;
   res.json({ resource: base, authorization_servers: [base] });
@@ -496,32 +443,19 @@ app.get("/.well-known/oauth-protected-resource", (req, res) => {
 
 app.get("/.well-known/oauth-authorization-server", (req, res) => {
   const base = BASE_URL || `${req.protocol}://${req.get("host")}`;
-  res.json({
-    issuer: base,
-    authorization_endpoint: `${base}/authorize`,
-    token_endpoint: `${base}/token`,
-    registration_endpoint: `${base}/register`,
-    response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code"],
-    code_challenge_methods_supported: ["S256", "plain"],
-    scopes_supported: ["mcp"],
-    token_endpoint_auth_methods_supported: ["none"],
-  });
+  res.json({ issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`, registration_endpoint: `${base}/register`, response_types_supported: ["code"], grant_types_supported: ["authorization_code"], code_challenge_methods_supported: ["S256", "plain"], scopes_supported: ["mcp"], token_endpoint_auth_methods_supported: ["none"] });
 });
 
 app.all("/register", (req, res) => {
   const clientId = `client_${randomUUID()}`;
   const body = req.method === "POST" ? req.body : {};
-  const meta = { ...body, client_id: clientId, client_secret: randomUUID(), token_endpoint_auth_method: "none" };
-  console.log(`OAuth client registered: ${clientId}`);
-  res.status(201).json(meta);
+  res.status(201).json({ ...body, client_id: clientId, client_secret: randomUUID(), token_endpoint_auth_method: "none" });
 });
 
 app.get("/authorize", (req, res) => {
   const { redirect_uri, state, client_id } = req.query as Record<string, string>;
   const code = randomUUID();
   authCodes.set(code, { client_id, used: false });
-  console.log(`Auto-approving OAuth for: ${client_id}`);
   const url = new URL(redirect_uri);
   url.searchParams.set("code", code);
   if (state) url.searchParams.set("state", state);
@@ -536,28 +470,17 @@ app.post("/token", (req, res) => {
   authCode.used = true;
   const token = `ems_${randomUUID()}`;
   accessTokens.add(token);
-  console.log(`Token issued for: ${client_id}`);
   res.json({ access_token: token, token_type: "Bearer", expires_in: 86400, scope: "mcp" });
 });
 
-// ── MCP endpoint (plain JSON-RPC) ────────────────────────────────────────────
-app.head("/", (_req, res) => {
-  res.setHeader("MCP-Protocol-Version", "2025-11-25");
-  res.status(200).end();
-});
+app.head("/", (_req, res) => { res.setHeader("MCP-Protocol-Version", "2025-11-25"); res.status(200).end(); });
 
 app.post("/", async (req: Request, res: Response) => {
   try {
     const body = req.body;
     console.log(`MCP request: ${body.method} (id=${body.id})`);
-
     const response = await handleJsonRpc(body);
-
-    if (response === null) {
-      res.status(202).end();
-      return;
-    }
-
+    if (response === null) { res.status(202).end(); return; }
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Mcp-Session-Id", req.headers["mcp-session-id"] as string ?? randomUUID());
     res.json(response);
