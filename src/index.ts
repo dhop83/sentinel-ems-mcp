@@ -322,7 +322,15 @@ async function callTool(name: string, a: any): Promise<{ content: any[]; isError
       case "ems_get_entitlement":           result = await client.getEntitlement(str("uid")!); break;
       case "ems_create_entitlement":        result = await client.createEntitlement(a); break;
       // ── PATCHED: { uid, ...rest } passes lines + customer_uid + state through to client ──
-      case "ems_update_entitlement":        { const { uid, ...rest } = a; result = await client.updateEntitlement(uid, rest); break; }
+      // ── PATCHED v2.1.5: parse lines if serialized as string by old schema cache ──
+      case "ems_update_entitlement": {
+        const { uid, ...rest } = a;
+        if (typeof rest.lines === "string") {
+          try { rest.lines = JSON.parse(rest.lines); } catch {}
+        }
+        result = await client.updateEntitlement(uid, rest);
+        break;
+      }
       case "ems_enable_entitlement":        result = await client.enableEntitlement(str("uid")!); break;
       case "ems_split_entitlement":         result = await client.splitEntitlement(str("uid")!, num("qty")!, str("customer_uid")); break;
       case "ems_delete_entitlement":        result = await client.deleteEntitlement(str("uid")!); break;
@@ -414,7 +422,7 @@ async function handleJsonRpc(msg: any): Promise<any> {
     let result: any;
     switch (method) {
       case "initialize":
-        result = { protocolVersion: params?.protocolVersion ?? "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "sentinel-ems-mcp", version: "2.1.4" } };
+        result = { protocolVersion: params?.protocolVersion ?? "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "sentinel-ems-mcp", version: "2.1.5" } };
         break;
       case "tools/list":   result = { tools: TOOLS }; break;
       case "tools/call":   result = await callTool(params.name, params.arguments ?? {}); break;
@@ -434,7 +442,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.get("/health", (_req, res) => res.json({ status: "ok", server: "sentinel-ems-mcp", version: "2.1.4" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", server: "sentinel-ems-mcp", version: "2.1.5" }));
 
 app.get("/.well-known/oauth-protected-resource", (req, res) => {
   const base = BASE_URL || `${req.protocol}://${req.get("host")}`;
