@@ -90,6 +90,8 @@ export interface EntitlementUpdate {
   cc_email?: string;
   ref_id1?: string;
   ref_id2?: string;
+  // ── PATCHED: support adding new product keys to existing entitlements ──
+  lines?: EntitlementLine[];
 }
 
 export interface ActivationAttribute {
@@ -241,7 +243,6 @@ export class SentinelEmsClient {
   }
 
   async createCustomer(customer: Customer) {
-    // Explicitly build the body so crmId and refId are always forwarded
     const body: Record<string, unknown> = {};
     if (customer.name)        body.name        = customer.name;
     if (customer.email)       body.emailId      = customer.email;
@@ -257,7 +258,6 @@ export class SentinelEmsClient {
   }
 
   async updateCustomer(uid: string, customer: Partial<Customer>) {
-    // Explicitly build the body so crmId and refId are always forwarded
     const body: Record<string, unknown> = {};
     if (customer.name        !== undefined) body.name        = customer.name;
     if (customer.email       !== undefined) body.emailId      = customer.email;
@@ -682,6 +682,34 @@ export class SentinelEmsClient {
     if (update.cc_email !== undefined) body.ccEmail = update.cc_email;
     if (update.ref_id1 !== undefined) body.refId1 = update.ref_id1;
     if (update.ref_id2 !== undefined) body.refId2 = update.ref_id2;
+
+    // ── PATCHED: add new product keys to an existing entitlement via PATCH ──
+    // Per EMS v5 API docs, PATCH /entitlements/{uid} accepts productKeys and
+    // appends new product key lines without removing existing ones.
+    if (update.lines && update.lines.length > 0) {
+      body.productKeys = {
+        productKey: update.lines.map((line) => {
+          const pk: Record<string, unknown> = {
+            item: {
+              itemProduct: {
+                product: { id: line.product_uid },
+              },
+            },
+            totalQuantity: line.qty ?? 1,
+            activationMethod: "FIXED",
+            fixedQuantity: 1,
+          };
+          if (line.end_date) {
+            pk.expiry = { neverExpires: false, endDate: line.end_date };
+          } else {
+            pk.expiry = { neverExpires: true };
+          }
+          if (line.start_date) pk.startDate = line.start_date;
+          return pk;
+        }),
+      };
+    }
+
     return this.request("PATCH", `/entitlements/${uid}`, { entitlement: body });
   }
 
